@@ -837,15 +837,15 @@
     </footer>
 
     <script>
-            const firebaseConfig = {
-          apiKey: "AIzaSyBFo_LsS3memSCyzlrbUsI4kcSL5hpAVQI",
-          authDomain: "biosenses-studies.firebaseapp.com",
-          projectId: "biosenses-studies",
-          storageBucket: "biosenses-studies.firebasestorage.app",
-          messagingSenderId: "231772140365",
-          appId: "1:231772140365:web:85e263e3370cb79211fd04",
-          measurementId: "G-9NQ069PPZE"
-        };
+ const firebaseConfig = {
+  apiKey: "AIzaSyBFo_LsS3memSCyzlrbUsI4kcSL5hpAVQI",
+  authDomain: "biosenses-studies.firebaseapp.com",
+  projectId: "biosenses-studies",
+  storageBucket: "biosenses-studies.firebasestorage.app",
+  messagingSenderId: "231772140365",
+  appId: "1:231772140365:web:85e263e3370cb79211fd04",
+  measurementId: "G-9NQ069PPZE"
+};
 
         let db = null;
         try {
@@ -1148,6 +1148,7 @@
                 { id: "sop-1", specimenId: "SPEC-2026-001", disease: "Type 1 Diabetes", sampleType: "Whole Blood (EDTA)", liveCells: 11.2, deadCells: 0.4, volume: 6, targetPerVial: 5, viability: 96.55, totalCells: 67.2, vials: 13, operator: "Lab Analyst", status: "Passed", notes: "Initial baseline sample" }
             ],
             users: [
+                { username: "Admin", password: "33333", role: "Admin" },
                 { username: "admin", password: "123", role: "Admin" },
                 { username: "editor", password: "123", role: "Editor" },
                 { username: "viewer", password: "123", role: "Viewer" }
@@ -1387,9 +1388,20 @@
         function handleLogin(event) {
             event.preventDefault();
             const u = document.getElementById("login-username").value.trim();
-            const p = document.getElementById("login-password").value;
+            const p = document.getElementById("login-password").value.trim();
             const errEl = document.getElementById("login-error");
 
+            // Direct local authentication check to bypass remote database delays or network blocks
+            const matchedLocal = appState.users.find(user => 
+                user.username.toLowerCase() === u.toLowerCase() && String(user.password).trim() === String(p)
+            );
+
+            if (matchedLocal) {
+                completeLoginUser(matchedLocal, errEl);
+                return;
+            }
+
+            // Fallback check against Firebase Realtime Database
             if (db) {
                 db.ref("users").once("value").then((snap) => {
                     const val = snap.val();
@@ -1397,20 +1409,24 @@
                         const remoteUsers = Object.values(val);
                         if (remoteUsers.length) appState.users = remoteUsers;
                     }
-                    completeLogin(u, p, errEl);
-                }).catch(() => completeLogin(u, p, errEl));
+                    const matchedRemote = appState.users.find(user => 
+                        user.username.toLowerCase() === u.toLowerCase() && String(user.password).trim() === String(p)
+                    );
+                    if (matchedRemote) {
+                        completeLoginUser(matchedRemote, errEl);
+                    } else {
+                        errEl.classList.remove("hidden");
+                    }
+                }).catch(() => {
+                    errEl.classList.remove("hidden");
+                });
             } else {
-                completeLogin(u, p, errEl);
+                errEl.classList.remove("hidden");
             }
         }
 
-        function completeLogin(u, p, errEl) {
-            const matched = appState.users.find(user => user.username === u && String(user.password) === String(p));
-            if (!matched) {
-                errEl.classList.remove("hidden");
-                return;
-            }
-            errEl.classList.add("hidden");
+        function completeLoginUser(matched, errEl) {
+            if (errEl) errEl.classList.add("hidden");
             appState.currentUser = matched;
             document.getElementById("login-overlay").classList.add("hidden");
             document.getElementById("user-badge").classList.remove("hidden");
@@ -1557,87 +1573,152 @@
             renderSourcingStatsAndCharts();
         }
 
-        // Helper to get or create sheet structure for a disease
-        function ensureRecruitmentSheetExists(sheetName) {
-            if (!appState.recruitment.sheets) {
-                appState.recruitment.sheets = {};
+        function renderSourcingTable() {
+            const sheet = appState.sourcing[appState.sourcingSheet];
+            const search = (document.getElementById("sourcing-search").value || "").toLowerCase().trim();
+            const statusFilter = document.getElementById("sourcing-status-filter").value;
+
+            document.getElementById("sourcing-thead").innerHTML = `<tr>${sheet.headers.map(h => `<th style="${getDynamicHeaderStyle(h)}" class="px-4 py-3 text-left">${escapeHtml(h)}</th>`).join("")}<th class="px-4 py-3 text-right whitespace-nowrap">Actions</th></tr>`;
+
+            const filtered = sheet.rows
+                .map((r, idx) => ({ r, idx }))
+                .filter(({ r }) => {
+                    if (statusFilter && (r["Visit Status"] || "") !== statusFilter) return false;
+                    if (!search) return true;
+                    return Object.values(r).some(v => v !== null && v !== undefined && String(v).toLowerCase().includes(search));
+                });
+
+            const tbody = document.getElementById("sourcing-tbody");
+            if (!filtered.length) {
+                tbody.innerHTML = `<tr><td colspan="${sheet.headers.length + 1}" class="px-4 py-8 text-center text-slate-400">No records in ${appState.sourcingSheet} matching filter.</td></tr>`;
+                return;
             }
-            if (!appState.recruitment.sheets[sheetName]) {
-                const defaultHeaders = [
-                    "Case #", "Patient Code", "Patient Name", "Patient Profile Ref.", "Gender", "Age",
-                    "Mobile Number", "National ID", "Core Tests Results", "Sample Type", "Sample Requirements",
-                    "BioSenses Review Notes", "BS - Accepted", "AXIOM Review Notes", "AXIOM - Accepted",
-                    "Inclusion Criteria", "Inclusion Criteria Details", "Exclusion Criteria", "Exclusion Criteria Details",
-                    "Appointment", "Survey Completed", "ICF Completed", "Sample Collected", "Processing Completed", "Notes"
-                ];
-                appState.recruitment.sheets[sheetName] = {
-                    headers: defaultHeaders,
-                    cases: []
-                };
-            }
-            return appState.recruitment.sheets[sheetName];
+
+            tbody.innerHTML = filtered.map(({ r, idx }) => {
+                const cells = sheet.headers.map(h => {
+                    const val = r[h];
+                    const display = val === null || val === undefined ? "" : String(val);
+                    const cellStyle = getDynamicCellStyle(h, display);
+                    return `<td style="${cellStyle}" class="px-4 py-3 whitespace-pre-line break-words">${escapeHtml(display)}</td>`;
+                }).join("");
+                return `<tr ondblclick="handleRowDoubleClick(event, () => openSourcingModal(${idx}))" class="hover:bg-slate-50/90 transition-colors cursor-pointer" title="Double-click to edit">${cells}<td class="px-4 py-3 text-right whitespace-nowrap space-x-1.5">
+                    <button onclick="openSourcingModal(${idx})" class="btn-write px-2.5 py-1.5 rounded-lg bg-amber-100 text-amber-800 hover:bg-amber-200 font-bold" title="Edit"><i class="fa-solid fa-pen"></i></button>
+                    <button onclick="deleteSourcingRow(${idx})" class="btn-write px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-800 hover:bg-rose-200 font-bold" title="Delete"><i class="fa-solid fa-trash"></i></button>
+                </td></tr>`;
+            }).join("");
+            applyRolePermissions();
         }
 
+        function openSourcingModal(rowIdx = null) {
+            if (!canWrite()) return;
+            const sheet = appState.sourcing[appState.sourcingSheet];
+            const existing = rowIdx !== null ? sheet.rows[rowIdx] : {};
+            modalContext = { type: "sourcing", rowIdx };
+            document.getElementById("record-modal-title").innerText = (rowIdx !== null ? "Edit" : "Add") + " — " + appState.sourcingSheet;
+
+            const sourcingTypeOptions = appState.lookups.sourcingTypes.map(x => x.value);
+            const diseaseOptions = appState.lookups.diseases.map(x => x.name);
+            const specialtyOptions = [];
+            appState.lookups.specialties.forEach(x => {
+                String(x.value || "").split(/[;\n]/).map(s => s.trim()).filter(Boolean).forEach(part => {
+                    if (!specialtyOptions.includes(part)) specialtyOptions.push(part);
+                });
+            });
+            const statusOptions = appState.lookups.visitStatuses.map(x => x.value);
+
+            document.getElementById("record-modal-fields").innerHTML = sheet.headers.map(h => {
+                const rawVal = existing[h] === null || existing[h] === undefined ? "" : String(existing[h]);
+
+                if (h === "Sourcing Type") {
+                    return `<div><label class="block font-bold text-slate-700 mb-1">${h}</label><select name="${h}" class="table-input">${buildSelectOptions(sourcingTypeOptions, rawVal, "-- Select Sourcing Type --")}</select></div>`;
+                }
+                if (h === "Disease") {
+                    return `<div><label class="block font-bold text-slate-700 mb-1">${h}</label><select name="${h}" class="table-input">${buildSelectOptions(diseaseOptions, rawVal, "-- Select Disease --")}</select></div>`;
+                }
+                if (h === "Speciality") {
+                    return `<div><label class="block font-bold text-slate-700 mb-1">${h}</label><select name="${h}" class="table-input">${buildSelectOptions(specialtyOptions, rawVal, "-- Select Speciality --")}</select></div>`;
+                }
+                if (h === "Visit Status") {
+                    return `<div><label class="block font-bold text-slate-700 mb-1">${h}</label><select name="${h}" class="table-input">${buildSelectOptions(statusOptions, rawVal, "-- Select Visit Status --")}</select></div>`;
+                }
+                return `<div><label class="block font-bold text-slate-700 mb-1">${h}</label><input type="text" name="${h}" value="${escapeAttr(rawVal)}" class="table-input"></div>`;
+            }).join("");
+            document.getElementById("record-modal").classList.remove("hidden");
+        }
+
+        function deleteSourcingRow(idx) {
+            if (!canWrite()) return;
+            appState.sourcing[appState.sourcingSheet].rows.splice(idx, 1);
+            saveToLocalStorage();
+            renderSourcingTabs();
+            renderSourcingTable();
+            renderSourcingStatsAndCharts();
+            updateHomeSummaryCounts();
+            showToast("Sourcing row deleted.", "amber");
+        }
+
+        function renderSourcingStatsAndCharts() {
+            const sheetNames = Object.keys(appState.sourcing);
+            const totalRows = sheetNames.reduce((sum, k) => sum + appState.sourcing[k].rows.length, 0);
+            const currentRows = appState.sourcing[appState.sourcingSheet].rows;
+            const completedCount = currentRows.filter(r => r["Visit Status"] === "Completed").length;
+            const scheduledCount = currentRows.filter(r => r["Visit Status"] === "Scheduled").length;
+
+            document.getElementById("sourcing-stats-cards").innerHTML = `
+                <div class="bg-white rounded-xl border border-slate-200 p-4"><div class="text-xs text-slate-500">Total Sourcing Entries</div><div class="text-2xl font-extrabold text-slate-900 mt-1">${totalRows}</div></div>
+                <div class="bg-white rounded-xl border border-slate-200 p-4"><div class="text-xs text-slate-500">Active Sheet Rows</div><div class="text-2xl font-extrabold text-blue-600 mt-1">${currentRows.length}</div></div>
+                <div class="bg-white rounded-xl border border-slate-200 p-4"><div class="text-xs text-slate-500">Completed Visits (Sheet)</div><div class="text-2xl font-extrabold text-emerald-600 mt-1">${completedCount}</div></div>
+                <div class="bg-white rounded-xl border border-slate-200 p-4"><div class="text-xs text-slate-500">Scheduled Visits (Sheet)</div><div class="text-2xl font-extrabold text-indigo-600 mt-1">${scheduledCount}</div></div>
+            `;
+
+            destroyChart("sourcingSheets");
+            destroyChart("sourcingStatus");
+
+            charts.sourcingSheets = new Chart(document.getElementById("chart-sourcing-sheets").getContext("2d"), {
+                type: "bar",
+                data: {
+                    labels: sheetNames,
+                    datasets: [{ label: "Records", data: sheetNames.map(k => appState.sourcing[k].rows.length), backgroundColor: "#2563eb" }]
+                },
+                options: { responsive: true, maintainAspectRatio: false }
+            });
+
+            const statusCounts = {};
+            currentRows.forEach(r => {
+                const st = r["Visit Status"] || "Unspecified";
+                statusCounts[st] = (statusCounts[st] || 0) + 1;
+            });
+
+            charts.sourcingStatus = new Chart(document.getElementById("chart-sourcing-status").getContext("2d"), {
+                type: "doughnut",
+                data: {
+                    labels: Object.keys(statusCounts),
+                    datasets: [{ data: Object.values(statusCounts), backgroundColor: ["#10b981", "#6366f1", "#94a3b8", "#f59e0b"] }]
+                },
+                options: { responsive: true, maintainAspectRatio: false }
+            });
+        }
+
+        function exportSourcingExcel() {
+            const wb = XLSX.utils.book_new();
+            Object.entries(appState.sourcing).forEach(([name, s]) => {
+                const ws = XLSX.utils.json_to_sheet(s.rows, { header: s.headers });
+                XLSX.utils.book_append_sheet(wb, ws, name.slice(0, 31));
+            });
+            XLSX.writeFile(wb, "Patients_Sourcing_Export.xlsx");
+        }
+
+        // ==================== OPTION B: PATIENT RECRUITMENT ====================
         function renderRecruitmentTabs() {
             const container = document.getElementById("recruitment-sheet-tabs");
-            if (!container) return;
-
-            // Ensure all diseases defined in lookups have a corresponding recruitment sheet entry
-            const lookupDiseases = (appState.lookups.diseases || []);
-            const existingSheetKeys = Object.keys(appState.recruitment.sheets || {});
-
-            // Map sheet names prioritizing lookup diseases with target case counts
-            const sheetList = [];
-
-            // Add lookup diseases as tabs with target case counts
-            lookupDiseases.forEach(d => {
-                const diseaseName = d.name;
-                const targetCount = d.targetCases ?? 0;
-                // Find matching existing sheet key or create standard label
-                const matchKey = existingSheetKeys.find(k => {
-                    const lowerK = k.toLowerCase();
-                    const lowerName = diseaseName.toLowerCase();
-                    const lowerAcr = (d.acronym || "").toLowerCase();
-                    return lowerK.includes(lowerName) || (lowerAcr && lowerK.startsWith(lowerAcr));
-                });
-
-                const sheetKey = matchKey || diseaseName;
-                ensureRecruitmentSheetExists(sheetKey);
-
-                sheetList.push({
-                    sheetKey,
-                    diseaseName,
-                    targetCount,
-                    acronym: d.acronym || ""
-                });
-            });
-
-            // Include any remaining custom sheets that were not in the lookup
-            existingSheetKeys.forEach(k => {
-                if (!sheetList.some(s => s.sheetKey === k)) {
-                    sheetList.push({
-                        sheetKey: k,
-                        diseaseName: k,
-                        targetCount: 0,
-                        acronym: ""
-                    });
-                }
-            });
-
-            if (!sheetList.some(s => s.sheetKey === appState.recruitmentSheet) && sheetList.length) {
-                appState.recruitmentSheet = sheetList[0].sheetKey;
+            const sheetNames = Object.keys(appState.recruitment.sheets || {});
+            if (!sheetNames.includes(appState.recruitmentSheet) && sheetNames.length) {
+                appState.recruitmentSheet = sheetNames[0];
             }
-
-            container.innerHTML = sheetList.map(item => {
-                const active = item.sheetKey === appState.recruitmentSheet;
-                const sheetData = appState.recruitment.sheets[item.sheetKey];
-                const actualCount = (sheetData && Array.isArray(sheetData.cases)) ? sheetData.cases.length : 0;
-                const targetText = item.targetCount > 0 ? ` / ${item.targetCount}` : "";
-                
-                return `<button onclick="selectRecruitmentSheet('${item.sheetKey.replace(/'/g, "\\'")}')" class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all flex items-center space-x-1.5 ${active ? "bg-indigo-600 text-white shadow-sm" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}">
-                    <span>${escapeHtml(item.diseaseName)}</span>
-                    <span class="px-2 py-0.5 rounded-full text-[10px] font-extrabold ${active ? "bg-white/20 text-white" : "bg-slate-200 text-slate-800"}">${actualCount}${targetText}</span>
-                </button>`;
+            container.innerHTML = sheetNames.map(sheetName => {
+                const active = sheetName === appState.recruitmentSheet;
+                const count = (appState.recruitment.sheets[sheetName].cases || []).length;
+                return `<button onclick="selectRecruitmentSheet('${sheetName.replace(/'/g, "\\'")}')" class="px-2.5 py-1.5 rounded-lg text-xs font-bold transition-all ${active ? "bg-indigo-600 text-white" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}">${escapeHtml(sheetName)} (${count})</button>`;
             }).join("");
         }
 
@@ -2009,11 +2090,49 @@
                 <div><label class="block font-bold text-slate-700 mb-1">Age</label><input type="number" name="age" value="${escapeAttr(existing.age ?? "")}" class="table-input"></div>
                 <div><label class="block font-bold text-slate-700 mb-1">Mobile Number</label><input type="text" name="mobile" value="${escapeAttr(existing.mobile ?? "")}" class="table-input"></div>
                 <div><label class="block font-bold text-slate-700 mb-1">National ID</label><input type="text" name="nationalId" value="${escapeAttr(existing.nationalId ?? "")}" class="table-input"></div>
-                <div><label class="block font-bold text-slate-700 mb-1">Sample Type</label><select id="rec-modal-sample-type" name="sampleType" class="table-input">${buildSelectOptions(sampleTypeOptions, existing.sampleType ?? "", "-- Select Sample Type --")}</select></div>
+                <div><label class="block font-bold text-slate-700 mb-1">Sample Type</label><select name="sampleType" class="table-input">${buildSelectOptions(sampleTypeOptions, existing.sampleType ?? "", "-- Select Sample Type --")}</select></div>
                 <div><label class="block font-bold text-slate-700 mb-1">Appointment</label><input type="text" name="appointment" value="${escapeAttr(existing.appointment ?? "")}" class="table-input"></div>
-                <div id="rec-modal-disease-sections" class="sm:col-span-2 space-y-3">
-                    ${renderRecruitmentDiseaseSections(selectedDisease, existing)}
+                <div class="sm:col-span-2 border border-blue-200 rounded-xl p-3 bg-blue-50/40 space-y-2">
+                    <div class="text-xs font-bold text-blue-900">Core Tests &amp; Results (${escapeHtml(selectedDisease)})</div>
+                    <div class="border border-blue-100 rounded-lg bg-white overflow-hidden">
+                        <table class="w-full text-left border-collapse">
+                            <thead class="bg-slate-100 text-[11px] font-bold text-slate-700 border-b border-slate-200">
+                                <tr>
+                                    <th class="px-2.5 py-1.5 w-8">#</th>
+                                    <th class="px-2.5 py-1.5 w-1/2">Core Test</th>
+                                    <th class="px-2.5 py-1.5 w-1/2">Test Results</th>
+                                </tr>
+                            </thead>
+                            <tbody>${coreTestsTableRows || `<tr><td colspan="3" class="px-3 py-2 text-xs text-slate-400">No core tests configured for this disease.</td></tr>`}</tbody>
+                        </table>
+                    </div>
                 </div>
+                <div class="sm:col-span-2"><label class="block font-bold text-slate-700 mb-1">Sample Requirements</label><textarea name="sampleReq" rows="2" class="table-input">${escapeHtml(existing.sampleReq ?? "")}</textarea></div>
+                <div><label class="block font-bold text-slate-700 mb-1">BioSenses Review Notes</label><input type="text" name="bsNotes" value="${escapeAttr(existing.bsNotes ?? "")}" class="table-input"></div>
+                <div><label class="block font-bold text-slate-700 mb-1">AXIOM Review Notes</label><input type="text" name="axiomNotes" value="${escapeAttr(existing.axiomNotes ?? "")}" class="table-input"></div>
+
+                <div class="sm:col-span-2 border border-indigo-200 rounded-xl p-3 bg-indigo-50/40 space-y-2">
+                    <div class="text-xs font-bold text-indigo-900">Inclusion Criteria Checklist (${escapeHtml(selectedDisease)})</div>
+                    <div class="border border-indigo-100 rounded-lg bg-white overflow-hidden">
+                        <table class="w-full text-left border-collapse">
+                            <tbody>${incTableRows || `<tr><td class="px-3 py-2 text-xs text-slate-400">No inclusion criteria configured for this disease.</td></tr>`}</tbody>
+                        </table>
+                    </div>
+                    <label class="block font-bold text-slate-700 pt-1">Additional Inclusion Criteria Notes</label>
+                    <input type="text" name="incText" value="${escapeAttr(existing.incText ?? "")}" class="table-input" placeholder="Optional custom inclusion note">
+                </div>
+
+                <div class="sm:col-span-2 border border-rose-200 rounded-xl p-3 bg-rose-50/40 space-y-2">
+                    <div class="text-xs font-bold text-rose-900">Exclusion Criteria Checklist (${escapeHtml(selectedDisease)})</div>
+                    <div class="border border-rose-100 rounded-lg bg-white overflow-hidden">
+                        <table class="w-full text-left border-collapse">
+                            <tbody>${excTableRows || `<tr><td class="px-3 py-2 text-xs text-slate-400">No exclusion criteria configured for this disease.</td></tr>`}</tbody>
+                        </table>
+                    </div>
+                    <label class="block font-bold text-slate-700 pt-1">Additional Exclusion Criteria Notes</label>
+                    <input type="text" name="excText" value="${escapeAttr(existing.excText ?? "")}" class="table-input" placeholder="Optional custom exclusion note">
+                </div>
+
                 <div class="sm:col-span-2 flex flex-wrap gap-4 pt-1">
                     <label class="flex items-center space-x-1.5"><input type="checkbox" name="bsAccepted" ${existing.bsAccepted ? "checked" : ""}><span>BS Accepted</span></label>
                     <label class="flex items-center space-x-1.5"><input type="checkbox" name="axiomAccepted" ${existing.axiomAccepted ? "checked" : ""}><span>AXIOM Accepted</span></label>
@@ -2185,51 +2304,46 @@
             const reader = new FileReader();
             reader.onload = function () {
                 const entry = {
-                    id: `${kind}-${Date.now()}`,
-                    title: file.name.replace(/\.[^.]+$/, ""),
+                    id: kind + "-" + Date.now(),
+                    title: file.name.replace(/\.[^/.]+$/, ""),
                     fileName: file.name,
-                    disease: kind === "surveys" ? "Custom CRF" : "Custom ICF",
-                    summary: `Uploaded template (${Math.max(1, Math.round(file.size / 1024))} KB)`,
+                    disease: kind === "surveys" ? "Custom CRF" : "Consent Form",
+                    language: kind === "icf" ? "Uploaded" : undefined,
+                    summary: `Uploaded template (${Math.max(1, Math.round(file.size / 1024))} KB) — Site ${appState.config.siteNumber}.`,
                     dataUrl: reader.result
                 };
-                if (kind === "surveys") {
-                    appState.surveyTemplates.unshift(entry);
-                } else {
-                    appState.icfTemplates.unshift(entry);
-                }
+                if (kind === "surveys") appState.surveyTemplates.push(entry);
+                else appState.icfTemplates.push(entry);
                 saveToLocalStorage();
                 renderTemplateGrid(kind);
-                showToast("Template uploaded.", "emerald");
+                showToast("Uploaded " + file.name, "emerald");
             };
             reader.readAsDataURL(file);
             event.target.value = "";
         }
 
         function downloadTemplateFile(kind, idx) {
-            const list = kind === "surveys" ? appState.surveyTemplates : appState.icfTemplates;
-            const tpl = list[idx];
+            const tpl = (kind === "surveys" ? appState.surveyTemplates : appState.icfTemplates)[idx];
             if (!tpl) return;
-            const link = document.createElement("a");
+            const a = document.createElement("a");
             if (tpl.dataUrl) {
-                link.href = tpl.dataUrl;
+                a.href = tpl.dataUrl;
             } else {
-                const content = `BioSenses / AXIOM Bioregistry Template\nTitle: ${tpl.title}\nFile: ${tpl.fileName}\nSummary: ${tpl.summary || ""}\n`;
-                const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
-                link.href = URL.createObjectURL(blob);
+                const content = `${tpl.title}\nFile: ${tpl.fileName}\nSponsor: ${appState.config.sponsorName}\nSite: ${appState.config.siteNumber}\nSummary: ${tpl.summary || ""}\n`;
+                const blob = new Blob([content], { type: "application/octet-stream" });
+                a.href = URL.createObjectURL(blob);
             }
-            link.download = tpl.fileName || "template.txt";
-            document.body.appendChild(link);
-            link.click();
-            document.body.removeChild(link);
+            a.download = tpl.fileName;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            showToast("Downloading " + tpl.fileName, "emerald");
         }
 
         function deleteTemplateFile(kind, idx) {
             if (!canWrite()) return;
-            if (kind === "surveys") {
-                appState.surveyTemplates.splice(idx, 1);
-            } else {
-                appState.icfTemplates.splice(idx, 1);
-            }
+            if (kind === "surveys") appState.surveyTemplates.splice(idx, 1);
+            else appState.icfTemplates.splice(idx, 1);
             saveToLocalStorage();
             renderTemplateGrid(kind);
             showToast("Template deleted.", "amber");
@@ -2237,21 +2351,19 @@
 
         // ==================== OPTION F: PATIENT SCHEDULING ====================
         function renderSchedulingTabs() {
-            const container = document.getElementById("scheduling-month-tabs");
-            if (!container) return;
-            const months = Object.keys(appState.scheduling || {});
+            const months = Object.keys(appState.scheduling);
             if (!months.includes(appState.schedulingMonth) && months.length) {
                 appState.schedulingMonth = months[0];
             }
-            container.innerHTML = months.map(m => {
+            document.getElementById("scheduling-month-tabs").innerHTML = months.map(m => {
                 const active = m === appState.schedulingMonth;
-                const count = (appState.scheduling[m].rows || []).length;
-                return `<button onclick="selectSchedulingMonth('${m.replace(/'/g, "\\'")}')" class="px-3 py-1.5 rounded-lg text-xs font-bold transition-all ${active ? "bg-violet-600 text-white" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}">${escapeHtml(m)} (${count})</button>`;
+                const cnt = appState.scheduling[m].rows.length;
+                return `<button onclick="selectSchedulingMonth('${m.replace(/'/g, "\\'")}')" class="px-3 py-1.5 rounded-lg text-xs font-bold ${active ? "bg-violet-600 text-white" : "bg-slate-100 text-slate-700 hover:bg-slate-200"}">${m} (${cnt})</button>`;
             }).join("");
         }
 
-        function selectSchedulingMonth(monthName) {
-            appState.schedulingMonth = monthName;
+        function selectSchedulingMonth(m) {
+            appState.schedulingMonth = m;
             renderSchedulingTabs();
             renderSchedulingTable();
             renderSchedulingStatsAndCharts();
@@ -2263,8 +2375,8 @@
             document.getElementById("record-modal-title").innerText = "Create New Scheduling Month / Year";
             document.getElementById("record-modal-fields").innerHTML = `
                 <div class="sm:col-span-2">
-                    <label class="block font-bold text-slate-700 mb-1">Month &amp; Year Label *</label>
-                    <input type="text" name="monthLabel" required class="table-input" placeholder="e.g., Jan 2027">
+                    <label class="block font-bold text-slate-700 mb-1">Month &amp; Year Tab Name (e.g., Jan 2027)</label>
+                    <input type="text" name="monthLabel" required class="table-input" placeholder="Jan 2027">
                 </div>
             `;
             document.getElementById("record-modal").classList.remove("hidden");
@@ -2272,35 +2384,33 @@
 
         function renderSchedulingTable() {
             const sheet = appState.scheduling[appState.schedulingMonth];
-            if (!sheet) return;
             const search = (document.getElementById("scheduling-search").value || "").toLowerCase().trim();
-            const statusFilter = document.getElementById("scheduling-status-filter").value;
+            const stFilter = document.getElementById("scheduling-status-filter").value;
 
             document.getElementById("scheduling-thead").innerHTML = `<tr>${sheet.headers.map(h => `<th style="${getDynamicHeaderStyle(h)}" class="px-4 py-3 text-left">${escapeHtml(h)}</th>`).join("")}<th class="px-4 py-3 text-right whitespace-nowrap">Actions</th></tr>`;
 
             const filtered = sheet.rows
                 .map((r, idx) => ({ r, idx }))
                 .filter(({ r }) => {
-                    if (statusFilter && (r["Appointment Status"] || "") !== statusFilter) return false;
+                    if (stFilter && (r["Appointment Status"] || "") !== stFilter) return false;
                     if (!search) return true;
                     return Object.values(r).some(v => v !== null && v !== undefined && String(v).toLowerCase().includes(search));
                 });
 
             const tbody = document.getElementById("scheduling-tbody");
             if (!filtered.length) {
-                tbody.innerHTML = `<tr><td colspan="${sheet.headers.length + 1}" class="px-4 py-8 text-center text-slate-400">No appointments in ${escapeHtml(appState.schedulingMonth)}.</td></tr>`;
+                tbody.innerHTML = `<tr><td colspan="${sheet.headers.length + 1}" class="px-4 py-8 text-center text-slate-400">No appointments logged for ${appState.schedulingMonth}.</td></tr>`;
                 return;
             }
 
             tbody.innerHTML = filtered.map(({ r, idx }) => {
-                const cells = sheet.headers.map(h => {
-                    const val = r[h];
-                    const display = val === null || val === undefined ? "" : String(val);
-                    return `<td style="${getDynamicCellStyle(h, display)}" class="px-4 py-3 whitespace-pre-line break-words">${escapeHtml(display)}</td>`;
+                const tds = sheet.headers.map(h => {
+                    const textVal = String(r[h] ?? "");
+                    return `<td style="${getDynamicCellStyle(h, textVal)}" class="px-4 py-3 whitespace-pre-line break-words">${escapeHtml(textVal)}</td>`;
                 }).join("");
-                return `<tr ondblclick="handleRowDoubleClick(event, () => openSchedulingModal(${idx}))" class="hover:bg-slate-50/90 transition-colors cursor-pointer" title="Double-click to edit">${cells}<td class="px-4 py-3 text-right whitespace-nowrap space-x-1.5">
-                    <button onclick="openSchedulingModal(${idx})" class="btn-write px-2.5 py-1.5 rounded-lg bg-amber-100 text-amber-800 hover:bg-amber-200 font-bold" title="Edit"><i class="fa-solid fa-pen"></i></button>
-                    <button onclick="deleteSchedulingRow(${idx})" class="btn-write px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-800 hover:bg-rose-200 font-bold" title="Delete"><i class="fa-solid fa-trash"></i></button>
+                return `<tr ondblclick="handleRowDoubleClick(event, () => openSchedulingModal(${idx}))" class="hover:bg-slate-50/90 transition-colors cursor-pointer" title="Double-click to edit">${tds}<td class="px-4 py-3 text-right whitespace-nowrap space-x-1.5">
+                    <button onclick="openSchedulingModal(${idx})" class="btn-write px-2.5 py-1.5 rounded-lg bg-amber-100 text-amber-800 font-bold"><i class="fa-solid fa-pen"></i></button>
+                    <button onclick="deleteSchedulingRow(${idx})" class="btn-write px-2.5 py-1.5 rounded-lg bg-rose-100 text-rose-800 font-bold"><i class="fa-solid fa-trash"></i></button>
                 </td></tr>`;
             }).join("");
             applyRolePermissions();
@@ -2314,19 +2424,19 @@
             document.getElementById("record-modal-title").innerText = (idx !== null ? "Edit" : "Add") + " Appointment — " + appState.schedulingMonth;
 
             const diseaseOptions = (appState.lookups.diseases || []).map(d => d.name);
-            const statusOptions = (appState.lookups.appointmentStatuses || []).map(s => s.value);
-            const modelOptions = (appState.lookups.visitModels || []).map(m => m.value);
+            const apptStatusOptions = (appState.lookups.appointmentStatuses || []).map(s => s.value);
+            const visitModelOptions = (appState.lookups.visitModels || []).map(m => m.value);
 
             document.getElementById("record-modal-fields").innerHTML = sheet.headers.map(h => {
-                const rawVal = existing[h] === null || existing[h] === undefined ? "" : String(existing[h]);
+                const rawVal = existing[h] ?? "";
                 if (h === "Disease") {
                     return `<div><label class="block font-bold text-slate-700 mb-1">${h}</label><select name="${h}" class="table-input">${buildSelectOptions(diseaseOptions, rawVal, "-- Select Disease --")}</select></div>`;
                 }
                 if (h === "Appointment Status") {
-                    return `<div><label class="block font-bold text-slate-700 mb-1">${h}</label><select name="${h}" class="table-input">${buildSelectOptions(statusOptions, rawVal, "-- Select Status --")}</select></div>`;
+                    return `<div><label class="block font-bold text-slate-700 mb-1">${h}</label><select name="${h}" class="table-input">${buildSelectOptions(apptStatusOptions, rawVal, "-- Select Status --")}</select></div>`;
                 }
                 if (h === "Visit Model") {
-                    return `<div><label class="block font-bold text-slate-700 mb-1">${h}</label><select name="${h}" class="table-input">${buildSelectOptions(modelOptions, rawVal, "-- Select Visit Model --")}</select></div>`;
+                    return `<div><label class="block font-bold text-slate-700 mb-1">${h}</label><select name="${h}" class="table-input">${buildSelectOptions(visitModelOptions, rawVal, "-- Select Visit Model --")}</select></div>`;
                 }
                 return `<div><label class="block font-bold text-slate-700 mb-1">${h}</label><input type="text" name="${h}" value="${escapeAttr(rawVal)}" class="table-input"></div>`;
             }).join("");
@@ -2343,536 +2453,302 @@
             updateHomeSummaryCounts();
             showToast("Appointment deleted.", "amber");
         }
-        function renderRecruitmentDiseaseSections(selectedDisease, caseObj) {
-            const sampleReqMatches = (appState.lookups.sampleRequirements || [])
-                .filter(r => r.disease === selectedDisease)
-                .map(r => r.value)
-                .filter(Boolean);
-            const defaultSampleReq = sampleReqMatches.length
-                ? sampleReqMatches.join("\n")
-                : (caseObj && caseObj.sampleReq ? caseObj.sampleReq : "");
 
-            const coreTestRows = getCaseCoreTestRows(caseObj || {}, selectedDisease, appState.lookups.coreTests);
-            const currentIncList = getCaseCriteriaList(caseObj || {}, selectedDisease, appState.lookups.inclusionCriteria, caseObj && caseObj.selectedInclusions, caseObj && caseObj.incText);
-            const currentExcList = getCaseCriteriaList(caseObj || {}, selectedDisease, appState.lookups.exclusionCriteria, caseObj && caseObj.selectedExclusions, caseObj && caseObj.excText);
+        function renderSchedulingStatsAndCharts() {
+            const months = Object.keys(appState.scheduling);
+            const totalAppts = months.reduce((sum, m) => sum + appState.scheduling[m].rows.length, 0);
+            const curRows = appState.scheduling[appState.schedulingMonth].rows;
+            const completed = curRows.filter(r => r["Appointment Status"] === "Completed").length;
+            const homeVisits = curRows.filter(r => String(r["Visit Model"] || "").toLowerCase().includes("home")).length;
 
-            const coreTestsTableRows = coreTestRows.map((row, i) => `
-                <tr class="border-b border-slate-100 last:border-b-0">
-                    <td class="px-2.5 py-1.5 font-mono text-[11px] text-slate-400 w-8 align-middle">${i + 1}</td>
-                    <td class="px-2.5 py-1.5 text-xs font-semibold text-slate-800 w-1/2 align-middle">
-                        <input type="hidden" name="coreTestName" value="${escapeAttr(row.test)}">
-                        <span>${escapeHtml(row.test)}</span>
-                    </td>
-                    <td class="px-2.5 py-1.5 w-1/2 align-middle">
-                        <input type="text" name="coreTestResult" value="${escapeAttr(row.result || "")}" class="table-input" placeholder="Enter result for ${escapeAttr(row.test)}">
-                    </td>
-                </tr>
-            `).join("");
-
-            const incTableRows = currentIncList.map((item, i) => `
-                <tr class="border-b border-slate-100 last:border-b-0">
-                    <td class="px-2 py-1.5 w-8 text-center">
-                        <input type="checkbox" name="modalIncItem" value="${escapeAttr(item.text)}" ${item.checked ? "checked" : ""} class="w-4 h-4 accent-indigo-600 cursor-pointer">
-                    </td>
-                    <td class="px-2 py-1.5 font-mono text-[11px] text-slate-400 w-7">${i + 1}</td>
-                    <td class="px-2 py-1.5 text-xs text-slate-800">${escapeHtml(item.text)}</td>
-                </tr>
-            `).join("");
-
-            const excTableRows = currentExcList.map((item, i) => `
-                <tr class="border-b border-slate-100 last:border-b-0">
-                    <td class="px-2 py-1.5 w-8 text-center">
-                        <input type="checkbox" name="modalExcItem" value="${escapeAttr(item.text)}" ${item.checked ? "checked" : ""} class="w-4 h-4 accent-rose-600 cursor-pointer">
-                    </td>
-                    <td class="px-2 py-1.5 font-mono text-[11px] text-slate-400 w-7">${i + 1}</td>
-                    <td class="px-2 py-1.5 text-xs text-slate-800">${escapeHtml(item.text)}</td>
-                </tr>
-            `).join("");
-
-            return `
-                <div>
-                    <label class="block font-bold text-slate-700 mb-1">Sample Requirements (${escapeHtml(selectedDisease || "Selected Disease")})</label>
-                    <textarea name="sampleReq" rows="2" class="table-input">${escapeHtml(defaultSampleReq)}</textarea>
-                </div>
-                <div class="border border-slate-200 rounded-xl overflow-hidden">
-                    <div class="bg-slate-100 px-3 py-1.5 font-bold text-slate-800 border-b border-slate-200">Core Tests &amp; Results (${escapeHtml(selectedDisease || "Selected Disease")})</div>
-                    <table class="w-full text-left border-collapse">
-                        <thead class="bg-slate-50 text-[10px] font-bold uppercase text-slate-600 border-b border-slate-200">
-                            <tr><th class="px-2.5 py-1 w-8">#</th><th class="px-2.5 py-1 w-1/2">Core Test</th><th class="px-2.5 py-1 w-1/2">Test Results</th></tr>
-                        </thead>
-                        <tbody>${coreTestsTableRows || `<tr><td colspan="3" class="px-3 py-2 text-slate-400 italic">No core tests mapped to this disease in Administration lookups.</td></tr>`}</tbody>
-                    </table>
-                </div>
-                <div class="grid grid-cols-1 md:grid-cols-2 gap-3">
-                    <div class="border border-slate-200 rounded-xl overflow-hidden">
-                        <div class="bg-indigo-50 px-3 py-1.5 font-bold text-indigo-900 border-b border-indigo-100">Inclusion Criteria</div>
-                        <table class="w-full text-left border-collapse">
-                            <tbody>${incTableRows || `<tr><td colspan="3" class="px-3 py-2 text-slate-400 italic">No inclusion criteria mapped.</td></tr>`}</tbody>
-                        </table>
-                    </div>
-                    <div class="border border-slate-200 rounded-xl overflow-hidden">
-                        <div class="bg-rose-50 px-3 py-1.5 font-bold text-rose-900 border-b border-rose-100">Exclusion Criteria</div>
-                        <table class="w-full text-left border-collapse">
-                            <tbody>${excTableRows || `<tr><td colspan="3" class="px-3 py-2 text-slate-400 italic">No exclusion criteria mapped.</td></tr>`}</tbody>
-                        </table>
-                    </div>
-                </div>
+            document.getElementById("scheduling-stats-cards").innerHTML = `
+                <div class="bg-white rounded-xl border border-slate-200 p-4"><div class="text-xs text-slate-500">Total Appointments</div><div class="text-2xl font-extrabold text-slate-900 mt-1">${totalAppts}</div></div>
+                <div class="bg-white rounded-xl border border-slate-200 p-4"><div class="text-xs text-slate-500">Active Month (${escapeHtml(appState.schedulingMonth)})</div><div class="text-2xl font-extrabold text-violet-600 mt-1">${curRows.length}</div></div>
+                <div class="bg-white rounded-xl border border-slate-200 p-4"><div class="text-xs text-slate-500">Completed Visits</div><div class="text-2xl font-extrabold text-emerald-600 mt-1">${completed}</div></div>
+                <div class="bg-white rounded-xl border border-slate-200 p-4"><div class="text-xs text-slate-500">Home Visits</div><div class="text-2xl font-extrabold text-blue-600 mt-1">${homeVisits}</div></div>
             `;
+
+            destroyChart("schMonths");
+            destroyChart("schModels");
+
+            charts.schMonths = new Chart(document.getElementById("chart-scheduling-months").getContext("2d"), {
+                type: "bar",
+                data: {
+                    labels: months,
+                    datasets: [{ label: "Appointments", data: months.map(m => appState.scheduling[m].rows.length), backgroundColor: "#7c3aed" }]
+                },
+                options: { responsive: true, maintainAspectRatio: false }
+            });
+
+            const modelCounts = {};
+            curRows.forEach(r => {
+                const mod = r["Visit Model"] || "Unspecified";
+                modelCounts[mod] = (modelCounts[mod] || 0) + 1;
+            });
+
+            charts.schModels = new Chart(document.getElementById("chart-scheduling-models").getContext("2d"), {
+                type: "pie",
+                data: {
+                    labels: Object.keys(modelCounts),
+                    datasets: [{ data: Object.values(modelCounts), backgroundColor: ["#2563eb", "#10b981", "#f59e0b", "#ec4899"] }]
+                },
+                options: { responsive: true, maintainAspectRatio: false }
+            });
         }
 
-        function handleRecruitmentDiseaseChange(newDisease) {
-            const sampleTypeSel = document.getElementById("rec-modal-sample-type");
-            if (sampleTypeSel) {
-                const matchedTypes = (appState.lookups.sampleTypes || [])
-                    .filter(s => !newDisease || s.disease === newDisease)
-                    .map(s => s.value);
-                const opts = matchedTypes.length ? matchedTypes : ["Blood", "Blood & Urine", "Urine", "Serum"];
-                sampleTypeSel.innerHTML = buildSelectOptions(opts, opts[0] || "", "-- Select Sample Type --");
-            }
-            const sectionsEl = document.getElementById("rec-modal-disease-sections");
-            if (sectionsEl) {
-                const currentCase = (modalContext && modalContext.type === "recruitment" && modalContext.idx !== null && modalContext.idx !== undefined)
-                    ? appState.recruitment.sheets[appState.recruitmentSheet].cases[modalContext.idx]
-                    : {};
-                sectionsEl.innerHTML = renderRecruitmentDiseaseSections(newDisease, currentCase);
-            }
+        function exportSchedulingExcel() {
+            const wb = XLSX.utils.book_new();
+            Object.entries(appState.scheduling).forEach(([m, s]) => {
+                const ws = XLSX.utils.json_to_sheet(s.rows, { header: s.headers });
+                XLSX.utils.book_append_sheet(wb, ws, m.slice(0, 31));
+            });
+            XLSX.writeFile(wb, "Patient_Scheduling_Export.xlsx");
         }
 
-        function openRecruitmentModal(idx = null) {
-            if (!canWrite()) return;
-            const sheet = appState.recruitment.sheets[appState.recruitmentSheet];
-            const existing = idx !== null ? sheet.cases[idx] : {
-                caseNum: sheet.cases.length + 1,
-                patientCode: "",
-                patientName: "",
-                profileRef: "Patient Profile",
-                gender: "F",
-                age: "",
-                mobile: "",
-                nationalId: "",
-                coreTests: "",
-                sampleType: "Blood",
-                sampleReq: "",
-                bsNotes: "",
-                bsAccepted: false,
-                axiomNotes: "",
-                axiomAccepted: false,
-                incChecked: false,
-                incText: "",
-                selectedInclusions: [],
-                excChecked: false,
-                excText: "",
-                selectedExclusions: [],
-                appointment: "",
-                surveyDone: false,
-                icfDone: false,
-                sampleCollected: false,
-                processingDone: false,
-                notes: ""
-            };
-            modalContext = { type: "recruitment", idx };
-            document.getElementById("record-modal-title").innerText = (idx !== null ? "Edit Case" : "Add Case") + " — " + appState.recruitmentSheet;
-
-            const diseaseOptions = (appState.lookups.diseases || []).map(d => d.name);
-            const selectedDisease = existing.disease || resolveDiseaseFromSheetName(appState.recruitmentSheet);
-            const sampleTypeOptions = (appState.lookups.sampleTypes || [])
-                .filter(s => !selectedDisease || s.disease === selectedDisease)
-                .map(s => s.value);
-            if (!sampleTypeOptions.length) {
-                sampleTypeOptions.push("Blood", "Blood & Urine", "Urine", "Serum");
-            }
-
-            document.getElementById("record-modal-fields").innerHTML = `
-                <div><label class="block font-bold text-slate-700 mb-1">Case #</label><input type="number" name="caseNum" value="${escapeAttr(existing.caseNum ?? "")}" class="table-input"></div>
-                <div><label class="block font-bold text-slate-700 mb-1">Patient Code</label><input type="text" name="patientCode" value="${escapeAttr(existing.patientCode ?? "")}" class="table-input"></div>
-                <div><label class="block font-bold text-slate-700 mb-1">Patient Name</label><input type="text" name="patientName" value="${escapeAttr(existing.patientName ?? "")}" class="table-input"></div>
-                <div><label class="block font-bold text-slate-700 mb-1">Disease</label><select name="disease" onchange="handleRecruitmentDiseaseChange(this.value)" class="table-input">${buildSelectOptions(diseaseOptions, selectedDisease, "-- Select Disease --")}</select></div>
-                <div><label class="block font-bold text-slate-700 mb-1">Gender</label><select name="gender" class="table-input"><option value="M" ${existing.gender === "M" ? "selected" : ""}>M</option><option value="F" ${existing.gender === "F" ? "selected" : ""}>F</option></select></div>
-                <div><label class="block font-bold text-slate-700 mb-1">Age</label><input type="number" name="age" value="${escapeAttr(existing.age ?? "")}" class="table-input"></div>
-                <div><label class="block font-bold text-slate-700 mb-1">Mobile Number</label><input type="text" name="mobile" value="${escapeAttr(existing.mobile ?? "")}" class="table-input"></div>
-                <div><label class="block font-bold text-slate-700 mb-1">National ID</label><input type="text" name="nationalId" value="${escapeAttr(existing.nationalId ?? "")}" class="table-input"></div>
-                <div><label class="block font-bold text-slate-700 mb-1">Sample Type</label><select id="rec-modal-sample-type" name="sampleType" class="table-input">${buildSelectOptions(sampleTypeOptions, existing.sampleType ?? "", "-- Select Sample Type --")}</select></div>
-                <div><label class="block font-bold text-slate-700 mb-1">Appointment</label><input type="text" name="appointment" value="${escapeAttr(existing.appointment ?? "")}" class="table-input"></div>
-                <div id="rec-modal-disease-sections" class="sm:col-span-2 space-y-3">
-                    ${renderRecruitmentDiseaseSections(selectedDisease, existing)}
-                </div>
-                <div class="sm:col-span-2 flex flex-wrap gap-4 pt-1">
-                    <label class="flex items-center space-x-1.5"><input type="checkbox" name="bsAccepted" ${existing.bsAccepted ? "checked" : ""}><span>BS Accepted</span></label>
-                    <label class="flex items-center space-x-1.5"><input type="checkbox" name="axiomAccepted" ${existing.axiomAccepted ? "checked" : ""}><span>AXIOM Accepted</span></label>
-                    <label class="flex items-center space-x-1.5"><input type="checkbox" name="surveyDone" ${existing.surveyDone ? "checked" : ""}><span>Survey Completed</span></label>
-                    <label class="flex items-center space-x-1.5"><input type="checkbox" name="icfDone" ${existing.icfDone ? "checked" : ""}><span>ICF Completed</span></label>
-                    <label class="flex items-center space-x-1.5"><input type="checkbox" name="sampleCollected" ${existing.sampleCollected ? "checked" : ""}><span>Sample Collected</span></label>
-                    <label class="flex items-center space-x-1.5"><input type="checkbox" name="processingDone" ${existing.processingDone ? "checked" : ""}><span>Processing Completed</span></label>
-                </div>
-                <div class="sm:col-span-2"><label class="block font-bold text-slate-700 mb-1">Notes</label><input type="text" name="notes" value="${escapeAttr(existing.notes ?? "")}" class="table-input"></div>
-            `;
-            document.getElementById("record-modal").classList.remove("hidden");
-        }
-        function renderAdminUsers() {
-            const tbody = document.getElementById("admin-users-tbody");
-            if (!tbody) return;
-            const users = Array.isArray(appState.users) ? appState.users : [];
-            tbody.innerHTML = users.map((u, idx) => `
-                <tr>
-                    <td class="px-3 py-2 font-semibold text-slate-900">${escapeHtml(u.username)}</td>
-                    <td class="px-3 py-2"><span class="px-2 py-0.5 rounded-full text-xs font-bold bg-slate-100 text-slate-700">${escapeHtml(u.role)}</span></td>
-                    <td class="px-3 py-2 text-right">
-                        <button onclick="deleteAdminUser(${idx})" class="btn-write px-2 py-1 rounded bg-rose-100 text-rose-700 text-xs font-bold" ${u.username === "admin" ? "disabled" : ""}><i class="fa-solid fa-trash"></i></button>
-                    </td>
-                </tr>
-            `).join("");
-            applyRolePermissions();
+        // ==================== MODAL SAVE HANDLER ====================
+        function closeRecordModal() {
+            document.getElementById("record-modal").classList.add("hidden");
+            modalContext = null;
         }
 
-        function handleCreateUser(event) {
+        function handleRecordModalSave(event) {
             event.preventDefault();
-            if (!canWrite()) return;
-            const username = (document.getElementById("new-user-name").value || "").trim();
-            const password = document.getElementById("new-user-pass").value;
-            const role = document.getElementById("new-user-role").value || "Viewer";
-            if (!username || !password) return;
-            const existingIdx = appState.users.findIndex(u => u.username === username);
-            if (existingIdx !== -1) {
-                appState.users[existingIdx] = { username, password, role };
-            } else {
-                appState.users.push({ username, password, role });
-            }
-            saveToLocalStorage();
-            renderAdminUsers();
-            event.target.reset();
-            showToast("User saved.", "emerald");
-        }
+            if (!canWrite() || !modalContext) return;
+            const form = event.target;
+            const fd = new FormData(form);
 
-        function deleteAdminUser(idx) {
-            if (!canWrite()) return;
-            const target = appState.users[idx];
-            if (!target || target.username === "admin") return;
-            appState.users.splice(idx, 1);
-            saveToLocalStorage();
-            renderAdminUsers();
-            showToast("User removed.", "amber");
-        }
+            if (modalContext.type === "sourcing") {
+                const sheet = appState.sourcing[appState.sourcingSheet];
+                const obj = {};
+                sheet.headers.forEach(h => {
+                    const val = fd.get(h);
+                    obj[h] = val === "" ? null : val;
+                });
+                if (modalContext.rowIdx !== null) sheet.rows[modalContext.rowIdx] = obj;
+                else sheet.rows.push(obj);
+                saveToLocalStorage();
+                renderSourcingTabs();
+                renderSourcingTable();
+                renderSourcingStatsAndCharts();
+                updateHomeSummaryCounts();
+                showToast("Sourcing record saved.", "emerald");
+            } else if (modalContext.type === "recruitment") {
+                const sheet = appState.recruitment.sheets[appState.recruitmentSheet];
+                const existing = modalContext.idx !== null ? sheet.cases[modalContext.idx] : {};
+                const testNames = Array.from(form.querySelectorAll('input[name="coreTestName"]')).map(el => el.value);
+                const testResults = Array.from(form.querySelectorAll('input[name="coreTestResult"]')).map(el => el.value);
+                const collectedTestRows = testNames.map((test, i) => ({
+                    test,
+                    result: String(testResults[i] || "").trim()
+                }));
+                const formattedCoreTests = formatCoreTestRowsAsText(collectedTestRows);
+                const selectedInclusions = Array.from(form.querySelectorAll('input[name="modalIncItem"]:checked')).map(el => el.value);
+                const selectedExclusions = Array.from(form.querySelectorAll('input[name="modalExcItem"]:checked')).map(el => el.value);
+                const incNote = String(fd.get("incText") || "").trim();
+                const excNote = String(fd.get("excText") || "").trim();
 
-        function loadAdminConfigInputs() {
-            const cfg = appState.config || {};
-            const siteEl = document.getElementById("cfg-site-number");
-            const sponsorEl = document.getElementById("cfg-sponsor-name");
-            const driveEl = document.getElementById("cfg-drive-url");
-            if (siteEl) siteEl.value = cfg.siteNumber || "962001";
-            if (sponsorEl) sponsorEl.value = cfg.sponsorName || "Axiom Bioregistry";
-            if (driveEl) driveEl.value = cfg.driveUrl || "https://drive.google.com/drive/folders/1PwlZRf9EnH2h4JNL0idrVc9ksIh4TLjd";
-        }
-
-        function saveAdminConfig() {
-            if (!canWrite()) return;
-            appState.config = {
-                siteNumber: (document.getElementById("cfg-site-number")?.value || "962001").trim(),
-                sponsorName: (document.getElementById("cfg-sponsor-name")?.value || "Axiom Bioregistry").trim(),
-                driveUrl: (document.getElementById("cfg-drive-url")?.value || "https://drive.google.com/drive/folders/1PwlZRf9EnH2h4JNL0idrVc9ksIh4TLjd").trim()
-            };
-            saveToLocalStorage();
-            showToast("Configuration saved.", "emerald");
-        }
-
-        function reseedFromExcelData(forceToast = false) {
-            if (!canWrite()) return;
-            appState.lookups = JSON.parse(JSON.stringify(INITIAL_SEED.lookups));
-            appState.sourcing = JSON.parse(JSON.stringify(INITIAL_SEED.sourcing));
-            appState.recruitment = JSON.parse(JSON.stringify(INITIAL_SEED.recruitment));
-            appState.scheduling = JSON.parse(JSON.stringify(INITIAL_SEED.scheduling));
-            saveToLocalStorage();
-            updateHomeSummaryCounts();
-            if (appState.activeModule === "admin") {
-                initLookupSelector();
+                const updatedCase = Object.assign({}, existing, {
+                    caseNum: fd.get("caseNum") ? Number(fd.get("caseNum")) : (existing.caseNum || sheet.cases.length + 1),
+                    patientCode: fd.get("patientCode") || null,
+                    patientName: fd.get("patientName") || null,
+                    disease: fd.get("disease") || existing.disease || resolveDiseaseFromSheetName(appState.recruitmentSheet),
+                    gender: fd.get("gender") || null,
+                    age: fd.get("age") !== "" ? Number(fd.get("age")) : null,
+                    mobile: fd.get("mobile") || null,
+                    nationalId: fd.get("nationalId") || null,
+                    sampleType: fd.get("sampleType") || null,
+                    appointment: fd.get("appointment") || null,
+                    coreTests: formattedCoreTests || null,
+                    sampleReq: fd.get("sampleReq") || null,
+                    bsNotes: fd.get("bsNotes") || null,
+                    axiomNotes: fd.get("axiomNotes") || null,
+                    selectedInclusions,
+                    incChecked: selectedInclusions.length > 0 || Boolean(incNote),
+                    incText: selectedInclusions.length ? selectedInclusions.join("; ") : (incNote || null),
+                    selectedExclusions,
+                    excChecked: selectedExclusions.length > 0 || Boolean(excNote),
+                    excText: selectedExclusions.length ? selectedExclusions.join("; ") : (excNote || null),
+                    bsAccepted: form.querySelector('[name="bsAccepted"]').checked,
+                    axiomAccepted: form.querySelector('[name="axiomAccepted"]').checked,
+                    surveyDone: form.querySelector('[name="surveyDone"]').checked,
+                    icfDone: form.querySelector('[name="icfDone"]').checked,
+                    sampleCollected: form.querySelector('[name="sampleCollected"]').checked,
+                    processingDone: form.querySelector('[name="processingDone"]').checked,
+                    notes: fd.get("notes") || null
+                });
+                if (modalContext.idx !== null) sheet.cases[modalContext.idx] = updatedCase;
+                else sheet.cases.push(updatedCase);
+                saveToLocalStorage();
+                renderRecruitmentTabs();
+                renderRecruitmentTable();
+                renderRecruitmentStatsAndCharts();
+                updateHomeSummaryCounts();
+                showToast("Recruitment case saved.", "emerald");
+            } else if (modalContext.type === "repository") {
+                const entry = {
+                    id: modalContext.idx !== null ? appState.repository[modalContext.idx].id : ("repo-" + Date.now()),
+                    patientCode: fd.get("patientCode"),
+                    patientName: fd.get("patientName"),
+                    disease: fd.get("disease"),
+                    docLabel: fd.get("docLabel"),
+                    driveUrl: fd.get("driveUrl") || appState.config.driveUrl,
+                    updatedAt: new Date().toISOString().slice(0, 10)
+                };
+                if (modalContext.idx !== null) appState.repository[modalContext.idx] = entry;
+                else appState.repository.push(entry);
+                saveToLocalStorage();
+                renderRepositoryTable();
+                showToast("Repository record saved.", "emerald");
+            } else if (modalContext.type === "newSchedulingMonth") {
+                const label = String(fd.get("monthLabel") || "").trim();
+                if (!label) return;
+                if (!appState.scheduling[label]) {
+                    appState.scheduling[label] = {
+                        headers: ["Batch ID", "Patient Name", "Patient Code", "Patient Mobile Number", "Disease", "Appointment Status", "Visit Model", "Visit Date", "Visit Time", "Visit Location (incase of home)", "Comments"],
+                        rows: []
+                    };
+                }
+                appState.schedulingMonth = label;
+                saveToLocalStorage();
+                renderSchedulingTabs();
+                renderSchedulingTable();
+                renderSchedulingStatsAndCharts();
+                showToast("Added month tab " + label, "emerald");
+            } else if (modalContext.type === "scheduling") {
+                const sheet = appState.scheduling[appState.schedulingMonth];
+                const obj = {};
+                sheet.headers.forEach(h => {
+                    const val = fd.get(h);
+                    obj[h] = val === "" ? null : val;
+                });
+                if (modalContext.idx !== null) sheet.rows[modalContext.idx] = obj;
+                else sheet.rows.push(obj);
+                saveToLocalStorage();
+                renderSchedulingTabs();
+                renderSchedulingTable();
+                renderSchedulingStatsAndCharts();
+                updateHomeSummaryCounts();
+                showToast("Appointment saved.", "emerald");
+            } else if (modalContext.type === "lookupItem") {
+                const cat = modalContext.category;
+                const list = appState.lookups[cat] || (appState.lookups[cat] = []);
+                const item = buildLookupItemFromForm(cat, fd, modalContext.idx !== null ? list[modalContext.idx] : null);
+                if (modalContext.idx !== null) list[modalContext.idx] = item;
+                else list.push(item);
+                saveToLocalStorage();
                 renderLookupTable();
-            }
-            if (forceToast) showToast("Restored Excel seed data.", "emerald");
-        }
+                showToast("Lookup entry saved.", "emerald");
+            } else if (modalContext.type === "criteriaBatch") {
+                const cat = modalContext.category;
+                const disease = fd.get("batchDisease");
+                const rawLines = String(fd.get("batchCriteriaRows") || "");
+                const parsedEntries = rawLines
+                    .split("\n")
+                    .map(line => line.trim())
+                    .filter(Boolean);
 
-        function getLookupColumns(cat) {
-            if (cat === "diseases") return ["Disease Name", "Acronym", "Target Cases"];
-            if (["sampleTypes", "coreTests", "sampleRequirements", "inclusionCriteria", "exclusionCriteria"].includes(cat)) {
-                return ["Disease", "Value"];
-            }
-            return ["Value"];
-        }
+                const otherEntries = (appState.lookups[cat] || []).filter(entry => entry.disease !== disease);
+                const prefix = cat === "inclusionCriteria" ? "inc" : "exc";
+                const newEntries = parsedEntries.map((val, i) => ({
+                    id: `${prefix}-${Date.now()}-${i}`,
+                    disease,
+                    value: val
+                }));
 
-        function getLookupDisplayRow(cat, item) {
-            if (!item) return [];
-            if (cat === "diseases") return [item.name || "", item.acronym || "", item.targetCases ?? ""];
-            if (["sampleTypes", "coreTests", "sampleRequirements", "inclusionCriteria", "exclusionCriteria"].includes(cat)) {
-                return [item.disease || "", item.value || ""];
-            }
-            return [item.value || ""];
-        }
-
-        function buildLookupItemFromForm(cat, fd, prev) {
-            if (cat === "diseases") {
-                return {
-                    id: (prev && prev.id) || ("dis-" + Date.now()),
-                    name: (fd.get("name") || "").trim(),
-                    acronym: (fd.get("acronym") || "").trim(),
-                    targetCases: fd.get("targetCases") !== "" ? Number(fd.get("targetCases")) : 0
-                };
-            }
-            if (["sampleTypes", "coreTests", "sampleRequirements", "inclusionCriteria", "exclusionCriteria"].includes(cat)) {
-                return {
-                    id: (prev && prev.id) || (cat.slice(0, 3) + "-" + Date.now()),
-                    disease: fd.get("disease") || "",
-                    value: (fd.get("value") || "").trim()
-                };
-            }
-            return {
-                id: (prev && prev.id) || (cat.slice(0, 3) + "-" + Date.now()),
-                value: (fd.get("value") || "").trim()
-            };
-        }
-
-        function renderLookupTable() {
-            const cat = appState.activeLookupCategory || "diseases";
-            const thead = document.getElementById("admin-lookup-thead");
-            const tbody = document.getElementById("admin-lookup-tbody");
-            if (!thead || !tbody) return;
-
-            const cols = getLookupColumns(cat);
-            thead.innerHTML = `<tr>${cols.map(c => `<th style="${getDynamicHeaderStyle(c)}" class="px-4 py-3 text-left">${escapeHtml(c)}</th>`).join("")}<th class="px-4 py-3 text-right whitespace-nowrap">Actions</th></tr>`;
-
-            const list = Array.isArray(appState.lookups[cat]) ? appState.lookups[cat] : [];
-            const diseaseFilter = isCriteriaLookupCategory(cat)
-                ? (document.getElementById("admin-criteria-disease-filter")?.value || "")
-                : "";
-
-            const rows = list
-                .map((item, idx) => ({ item, idx }))
-                .filter(({ item }) => !diseaseFilter || (item && item.disease === diseaseFilter));
-
-            if (!rows.length) {
-                tbody.innerHTML = `<tr><td colspan="${cols.length + 1}" class="px-4 py-6 text-center text-slate-400">No lookup entries found.</td></tr>`;
-                return;
+                appState.lookups[cat] = [...otherEntries, ...newEntries];
+                saveToLocalStorage();
+                renderLookupTable();
+                showToast(`Saved ${newEntries.length} criteria rows for ${disease}.`, "emerald");
             }
 
-            tbody.innerHTML = rows.map(({ item, idx }) => {
-                const vals = getLookupDisplayRow(cat, item);
-                const tds = vals.map((v, i) => `<td style="${getDynamicCellStyle(cols[i], String(v))}" class="px-4 py-2.5 whitespace-pre-line break-words">${escapeHtml(String(v))}</td>`).join("");
-                return `<tr ondblclick="handleRowDoubleClick(event, () => openLookupItemModal(${idx}))" class="hover:bg-slate-50 cursor-pointer" title="Double-click to edit">${tds}<td class="px-4 py-2.5 text-right whitespace-nowrap space-x-1">
-                    <button onclick="openLookupItemModal(${idx})" class="btn-write px-2.5 py-1 rounded bg-amber-100 text-amber-800 font-bold"><i class="fa-solid fa-pen"></i></button>
-                    <button onclick="deleteLookupItem(${idx})" class="btn-write px-2.5 py-1 rounded bg-rose-100 text-rose-800 font-bold"><i class="fa-solid fa-trash"></i></button>
-                </td></tr>`;
-            }).join("");
-            applyRolePermissions();
-        }
-
-        function openLookupItemModal(idx = null) {
-            if (!canWrite()) return;
-            const cat = appState.activeLookupCategory || "diseases";
-            const existing = idx !== null ? appState.lookups[cat][idx] : {};
-            modalContext = { type: "lookupItem", category: cat, idx };
-            document.getElementById("record-modal-title").innerText = (idx !== null ? "Edit" : "Add") + " Lookup Entry";
-
-            const diseaseNames = (appState.lookups.diseases || []).map(d => d.name);
-
-            if (cat === "diseases") {
-                document.getElementById("record-modal-fields").innerHTML = `
-                    <div><label class="block font-bold text-slate-700 mb-1">Disease Name *</label><input type="text" name="name" required value="${escapeAttr(existing.name || "")}" class="table-input"></div>
-                    <div><label class="block font-bold text-slate-700 mb-1">Acronym</label><input type="text" name="acronym" value="${escapeAttr(existing.acronym || "")}" class="table-input"></div>
-                    <div class="sm:col-span-2"><label class="block font-bold text-slate-700 mb-1">Target Cases</label><input type="number" name="targetCases" value="${escapeAttr(existing.targetCases ?? 0)}" class="table-input"></div>
-                `;
-            } else if (["sampleTypes", "coreTests", "sampleRequirements", "inclusionCriteria", "exclusionCriteria"].includes(cat)) {
-                document.getElementById("record-modal-fields").innerHTML = `
-                    <div><label class="block font-bold text-slate-700 mb-1">Disease *</label><select name="disease" required class="table-input">${buildSelectOptions(diseaseNames, existing.disease || "", "-- Select Disease --")}</select></div>
-                    <div><label class="block font-bold text-slate-700 mb-1">Value *</label><input type="text" name="value" required value="${escapeAttr(existing.value || "")}" class="table-input"></div>
-                `;
-            } else {
-                document.getElementById("record-modal-fields").innerHTML = `
-                    <div class="sm:col-span-2"><label class="block font-bold text-slate-700 mb-1">Value *</label><input type="text" name="value" required value="${escapeAttr(existing.value || "")}" class="table-input"></div>
-                `;
-            }
-            document.getElementById("record-modal").classList.remove("hidden");
-        }
-
-        function deleteLookupItem(idx) {
-            if (!canWrite()) return;
-            const cat = appState.activeLookupCategory || "diseases";
-            appState.lookups[cat].splice(idx, 1);
-            saveToLocalStorage();
-            renderLookupTable();
-            showToast("Lookup entry deleted.", "amber");
-        }
-
-        function openCriteriaBatchModal() {
-            if (!canWrite()) return;
-            const cat = appState.activeLookupCategory;
-            if (!isCriteriaLookupCategory(cat)) return;
-            const diseaseNames = (appState.lookups.diseases || []).map(d => d.name);
-            const filterVal = document.getElementById("admin-criteria-disease-filter")?.value || "";
-            const defaultDisease = filterVal || diseaseNames[0] || "";
-
-            modalContext = { type: "criteriaBatch", category: cat };
-            document.getElementById("record-modal-title").innerText = "Add / Edit Multiple Criteria Rows per Disease";
-
-            const existingLines = (appState.lookups[cat] || [])
-                .filter(item => item.disease === defaultDisease)
-                .map(item => item.value)
-                .join("\n");
-
-            document.getElementById("record-modal-fields").innerHTML = `
-                <div class="sm:col-span-2">
-                    <label class="block font-bold text-slate-700 mb-1">Target Disease *</label>
-                    <select id="batch-criteria-disease" name="batchDisease" required onchange="onBatchDiseaseChange(this.value)" class="table-input">${buildSelectOptions(diseaseNames, defaultDisease, "-- Select Disease --")}</select>
-                </div>
-                <div class="sm:col-span-2">
-                    <label class="block font-bold text-slate-700 mb-1">Criteria Rows (one criterion per line)</label>
-                    <textarea id="batch-criteria-textarea" name="batchCriteriaRows" rows="7" class="table-input" placeholder="Enter each criterion on its own line...">${escapeHtml(existingLines)}</textarea>
-                </div>
-            `;
-            document.getElementById("record-modal").classList.remove("hidden");
-        }
-
-        function onBatchDiseaseChange(diseaseName) {
-            const cat = modalContext && modalContext.category;
-            const ta = document.getElementById("batch-criteria-textarea");
-            if (!cat || !ta) return;
-            const lines = (appState.lookups[cat] || [])
-                .filter(item => item.disease === diseaseName)
-                .map(item => item.value);
-            ta.value = lines.join("\n");
+            closeRecordModal();
         }
 
         // ==================== OPTION G: SOP EXECUTION ====================
         let editingSopId = null;
 
-        function switchSopTab(tabName) {
-            const tabs = ["entry", "historical", "analytics"];
-            tabs.forEach(t => {
+        function switchSopTab(tab) {
+            ["entry", "historical", "analytics"].forEach(t => {
+                document.getElementById("sop-panel-" + t).classList.toggle("hidden", t !== tab);
                 const btn = document.getElementById("sop-tab-" + t);
-                const panel = document.getElementById("sop-panel-" + t);
-                if (btn) {
-                    btn.className = t === tabName
-                        ? "px-4 py-2 rounded-lg text-xs font-bold bg-blue-600 text-white"
-                        : "px-4 py-2 rounded-lg text-xs font-bold bg-slate-100 text-slate-700 hover:bg-slate-200";
-                }
-                if (panel) {
-                    panel.classList.toggle("hidden", t !== tabName);
-                }
+                btn.className = t === tab
+                    ? "px-4 py-2 rounded-lg text-xs font-bold bg-blue-600 text-white"
+                    : "px-4 py-2 rounded-lg text-xs font-bold bg-slate-100 text-slate-700 hover:bg-slate-200";
             });
-
-            if (tabName === "historical") {
-                renderSopLogs();
-            } else if (tabName === "analytics") {
-                renderSopAnalyticsCharts();
-            }
+            if (tab === "historical") renderSopLogs();
+            if (tab === "analytics") renderSopCharts();
         }
 
         function calculateSopMetrics() {
-            const liveEl = document.getElementById("sop-live-cells");
-            const deadEl = document.getElementById("sop-dead-cells");
-            const volEl = document.getElementById("sop-volume");
-            const targetEl = document.getElementById("sop-target-per-vial");
-
-            const live = Math.max(0, parseFloat(liveEl && liveEl.value) || 0);
-            const dead = Math.max(0, parseFloat(deadEl && deadEl.value) || 0);
-            const volume = Math.max(0, parseFloat(volEl && volEl.value) || 0);
-            const targetPerVial = Math.max(0.1, parseFloat(targetEl && targetEl.value) || 5);
+            const live = parseFloat(document.getElementById("sop-live-cells").value) || 0;
+            const dead = parseFloat(document.getElementById("sop-dead-cells").value) || 0;
+            const vol = parseFloat(document.getElementById("sop-volume").value) || 0;
+            const target = parseFloat(document.getElementById("sop-target-per-vial").value) || 5;
 
             const totalConc = live + dead;
             const viability = totalConc > 0 ? (live / totalConc) * 100 : 0;
-            const totalViableCells = live * volume;
-            const recommendedVials = Math.max(0, Math.floor(totalViableCells / targetPerVial));
+            const totalViable = live * vol;
+            const vials = target > 0 ? Math.max(0, Math.round(totalViable / target)) : 0;
 
-            setTextIfExists("sop-viability-display", viability.toFixed(2) + "%");
-            setTextIfExists("sop-total-cells-display", totalViableCells.toFixed(2));
-            setTextIfExists("sop-vials-display", String(recommendedVials));
-
-            return {
-                viability: Number(viability.toFixed(2)),
-                totalCells: Number(totalViableCells.toFixed(2)),
-                vials: recommendedVials
-            };
-        }
-
-        function createNewSopRecord() {
-            if (!canWrite()) return;
-            editingSopId = null;
-            const banner = document.getElementById("sop-edit-banner");
-            if (banner) banner.classList.add("hidden");
-            const form = document.getElementById("sop-form");
-            if (form) form.reset();
-            calculateSopMetrics();
-            switchSopTab("entry");
-        }
-
-        function cancelSopEdit() {
-            editingSopId = null;
-            const banner = document.getElementById("sop-edit-banner");
-            if (banner) banner.classList.add("hidden");
-            const form = document.getElementById("sop-form");
-            if (form) form.reset();
-            calculateSopMetrics();
+            document.getElementById("sop-viability-display").innerText = viability.toFixed(2) + "%";
+            document.getElementById("sop-total-cells-display").innerText = totalViable.toFixed(2);
+            document.getElementById("sop-vials-display").innerText = String(vials);
+            return { viability: Number(viability.toFixed(2)), totalCells: Number(totalViable.toFixed(2)), vials };
         }
 
         function handleSopSubmit(event) {
             event.preventDefault();
             if (!canWrite()) return;
-
-            const specimenId = (document.getElementById("sop-specimen-id").value || "").trim();
-            const disease = document.getElementById("sop-disease").value;
-            const sampleType = document.getElementById("sop-sample-type").value;
-            const operator = (document.getElementById("sop-operator").value || "").trim();
-            const liveCells = parseFloat(document.getElementById("sop-live-cells").value) || 0;
-            const deadCells = parseFloat(document.getElementById("sop-dead-cells").value) || 0;
-            const volume = parseFloat(document.getElementById("sop-volume").value) || 0;
-            const targetPerVial = parseFloat(document.getElementById("sop-target-per-vial").value) || 5;
-            const status = document.getElementById("sop-status").value;
-            const notes = (document.getElementById("sop-notes").value || "").trim();
-            const checkpoints = {
-                density: Boolean(document.getElementById("chk-density") && document.getElementById("chk-density").checked),
-                wash: Boolean(document.getElementById("chk-wash") && document.getElementById("chk-wash").checked),
-                cryo: Boolean(document.getElementById("chk-cryo") && document.getElementById("chk-cryo").checked)
-            };
-
             const metrics = calculateSopMetrics();
             const record = {
                 id: editingSopId || ("sop-" + Date.now()),
-                specimenId,
-                disease,
-                sampleType,
-                liveCells,
-                deadCells,
-                volume,
-                targetPerVial,
+                specimenId: document.getElementById("sop-specimen-id").value.trim(),
+                disease: document.getElementById("sop-disease").value,
+                sampleType: document.getElementById("sop-sample-type").value,
+                operator: document.getElementById("sop-operator").value.trim(),
+                liveCells: parseFloat(document.getElementById("sop-live-cells").value) || 0,
+                deadCells: parseFloat(document.getElementById("sop-dead-cells").value) || 0,
+                volume: parseFloat(document.getElementById("sop-volume").value) || 0,
+                targetPerVial: parseFloat(document.getElementById("sop-target-per-vial").value) || 5,
                 viability: metrics.viability,
                 totalCells: metrics.totalCells,
                 vials: metrics.vials,
-                operator,
-                status,
-                notes,
-                checkpoints,
-                updatedAt: new Date().toISOString().slice(0, 10)
+                chkDensity: document.getElementById("chk-density").checked,
+                chkWash: document.getElementById("chk-wash").checked,
+                chkCryo: document.getElementById("chk-cryo").checked,
+                status: document.getElementById("sop-status").value,
+                notes: document.getElementById("sop-notes").value.trim()
             };
 
-            if (!Array.isArray(appState.sopRecords)) appState.sopRecords = [];
-            const existingIdx = appState.sopRecords.findIndex(r => r.id === record.id);
-            if (existingIdx !== -1) {
-                appState.sopRecords[existingIdx] = record;
+            if (editingSopId) {
+                const idx = appState.sopRecords.findIndex(r => r.id === editingSopId);
+                if (idx >= 0) appState.sopRecords[idx] = record;
+                editingSopId = null;
+                document.getElementById("sop-edit-banner").classList.add("hidden");
             } else {
                 appState.sopRecords.unshift(record);
             }
-
-            editingSopId = null;
-            const banner = document.getElementById("sop-edit-banner");
-            if (banner) banner.classList.add("hidden");
             saveToLocalStorage();
             renderSopLogs();
-            switchSopTab("historical");
             showToast("SOP record saved.", "emerald");
         }
 
-        function editSopRecord(idx) {
-            if (!canWrite()) return;
-            const rec = appState.sopRecords[idx];
-            if (!rec) return;
+        function createNewSopRecord() {
+            editingSopId = null;
+            document.getElementById("sop-edit-banner").classList.add("hidden");
+            document.getElementById("sop-form").reset();
+            document.getElementById("sop-specimen-id").value = "SPEC-" + new Date().getFullYear() + "-" + String(Math.floor(Math.random() * 900) + 100);
+            calculateSopMetrics();
+            switchSopTab("entry");
+        }
 
+        function editSopRecord(id) {
+            if (!canWrite()) return;
+            const rec = appState.sopRecords.find(r => r.id === id);
+            if (!rec) return;
             editingSopId = rec.id;
+            document.getElementById("sop-editing-id-label").innerText = rec.specimenId;
+            document.getElementById("sop-edit-banner").classList.remove("hidden");
             document.getElementById("sop-specimen-id").value = rec.specimenId || "";
             document.getElementById("sop-disease").value = rec.disease || "Type 1 Diabetes";
             document.getElementById("sop-sample-type").value = rec.sampleType || "Whole Blood (EDTA)";
@@ -2881,352 +2757,389 @@
             document.getElementById("sop-dead-cells").value = rec.deadCells ?? 0.5;
             document.getElementById("sop-volume").value = rec.volume ?? 5;
             document.getElementById("sop-target-per-vial").value = rec.targetPerVial ?? 5;
+            document.getElementById("chk-density").checked = Boolean(rec.chkDensity);
+            document.getElementById("chk-wash").checked = Boolean(rec.chkWash);
+            document.getElementById("chk-cryo").checked = Boolean(rec.chkCryo);
             document.getElementById("sop-status").value = rec.status || "Passed";
             document.getElementById("sop-notes").value = rec.notes || "";
-
-            if (document.getElementById("chk-density")) document.getElementById("chk-density").checked = Boolean(rec.checkpoints && rec.checkpoints.density);
-            if (document.getElementById("chk-wash")) document.getElementById("chk-wash").checked = Boolean(rec.checkpoints && rec.checkpoints.wash);
-            if (document.getElementById("chk-cryo")) document.getElementById("chk-cryo").checked = Boolean(rec.checkpoints && rec.checkpoints.cryo);
-
-            setTextIfExists("sop-editing-id-label", rec.specimenId || rec.id);
-            const banner = document.getElementById("sop-edit-banner");
-            if (banner) banner.classList.remove("hidden");
             calculateSopMetrics();
             switchSopTab("entry");
         }
 
-        function deleteSopRecord(idx) {
+        function cancelSopEdit() {
+            editingSopId = null;
+            document.getElementById("sop-edit-banner").classList.add("hidden");
+            document.getElementById("sop-form").reset();
+            calculateSopMetrics();
+        }
+
+        function deleteSopRecord(id) {
             if (!canWrite()) return;
-            appState.sopRecords.splice(idx, 1);
+            appState.sopRecords = appState.sopRecords.filter(r => r.id !== id);
             saveToLocalStorage();
             renderSopLogs();
-            showToast("SOP record deleted.", "amber");
+            showToast("SOP log deleted.", "amber");
         }
 
         function renderSopLogs() {
             const tbody = document.getElementById("sop-logs-tbody");
-            if (!tbody) return;
-            const list = Array.isArray(appState.sopRecords) ? appState.sopRecords : [];
-            if (!list.length) {
-                tbody.innerHTML = `<tr><td colspan="8" class="px-4 py-8 text-center text-slate-400">No SOP execution logs recorded yet.</td></tr>`;
+            if (!appState.sopRecords.length) {
+                tbody.innerHTML = `<tr><td colspan="8" class="px-4 py-8 text-center text-slate-400">No SOP execution logs yet.</td></tr>`;
                 return;
             }
-            tbody.innerHTML = list.map((rec, idx) => `
-                <tr ondblclick="handleRowDoubleClick(event, () => editSopRecord(${idx}))" class="hover:bg-slate-50 cursor-pointer" title="Double-click to edit">
-                    <td class="px-4 py-2.5 font-bold text-slate-900">${escapeHtml(rec.specimenId || "")}</td>
-                    <td class="px-4 py-2.5">${escapeHtml(rec.disease || "")}</td>
-                    <td class="px-4 py-2.5">${escapeHtml(rec.sampleType || "")}</td>
-                    <td class="px-4 py-2.5 font-semibold text-emerald-700">${escapeHtml((rec.viability ?? 0) + "%")}</td>
-                    <td class="px-4 py-2.5">${escapeHtml(rec.vials ?? 0)}</td>
-                    <td class="px-4 py-2.5">${escapeHtml(rec.operator || "")}</td>
-                    <td class="px-4 py-2.5"><span class="px-2 py-0.5 rounded-full text-xs font-bold bg-slate-100 text-slate-800">${escapeHtml(rec.status || "Passed")}</span></td>
-                    <td class="px-4 py-2.5 text-right whitespace-nowrap space-x-1">
-                        <button onclick="editSopRecord(${idx})" class="btn-write px-2.5 py-1 rounded bg-amber-100 text-amber-800 font-bold"><i class="fa-solid fa-pen"></i></button>
-                        <button onclick="deleteSopRecord(${idx})" class="btn-write px-2.5 py-1 rounded bg-rose-100 text-rose-800 font-bold"><i class="fa-solid fa-trash"></i></button>
+            tbody.innerHTML = appState.sopRecords.map(r => `
+                <tr ondblclick="handleRowDoubleClick(event, () => editSopRecord('${r.id}'))" class="hover:bg-slate-50 cursor-pointer" title="Double-click to edit">
+                    <td class="px-4 py-2.5 font-bold text-slate-900">${escapeHtml(r.specimenId)}</td>
+                    <td class="px-4 py-2.5">${escapeHtml(r.disease)}</td>
+                    <td class="px-4 py-2.5">${escapeHtml(r.sampleType)}</td>
+                    <td class="px-4 py-2.5 font-semibold text-emerald-700">${escapeHtml(r.viability)}%</td>
+                    <td class="px-4 py-2.5">${escapeHtml(r.vials)}</td>
+                    <td class="px-4 py-2.5">${escapeHtml(r.operator)}</td>
+                    <td class="px-4 py-2.5"><span class="px-2 py-0.5 rounded-full text-[11px] font-bold bg-blue-50 text-blue-700">${escapeHtml(r.status)}</span></td>
+                    <td class="px-4 py-2.5 text-right space-x-1">
+                        <button onclick="editSopRecord('${r.id}')" class="btn-write px-2 py-1 rounded bg-amber-100 text-amber-800 font-bold"><i class="fa-solid fa-pen"></i></button>
+                        <button onclick="deleteSopRecord('${r.id}')" class="btn-write px-2 py-1 rounded bg-rose-100 text-rose-800 font-bold"><i class="fa-solid fa-trash"></i></button>
                     </td>
                 </tr>
             `).join("");
             applyRolePermissions();
         }
 
-        function renderSopAnalyticsCharts() {
-            const list = Array.isArray(appState.sopRecords) ? appState.sopRecords : [];
+        function renderSopCharts() {
             destroyChart("sopStatus");
-            destroyChart("sopSampleTypes");
+            destroyChart("sopSamples");
 
-            const statusCounts = {};
-            const sampleCounts = {};
-            list.forEach(r => {
-                const st = r.status || "Unspecified";
-                const sm = r.sampleType || "Unspecified";
-                statusCounts[st] = (statusCounts[st] || 0) + 1;
-                sampleCounts[sm] = (sampleCounts[sm] || 0) + 1;
+            const stCounts = {};
+            const smpCounts = {};
+            appState.sopRecords.forEach(r => {
+                stCounts[r.status || "Passed"] = (stCounts[r.status || "Passed"] || 0) + 1;
+                smpCounts[r.sampleType || "PBMC"] = (smpCounts[r.sampleType || "PBMC"] || 0) + 1;
             });
 
-            const stCanvas = document.getElementById("chart-sop-status");
-            const smCanvas = document.getElementById("chart-sop-sample-types");
-            if (stCanvas) {
-                charts.sopStatus = new Chart(stCanvas.getContext("2d"), {
-                    type: "doughnut",
-                    data: {
-                        labels: Object.keys(statusCounts),
-                        datasets: [{ data: Object.values(statusCounts), backgroundColor: ["#10b981", "#f59e0b", "#ef4444", "#64748b"] }]
-                    },
-                    options: { responsive: true, maintainAspectRatio: false }
-                });
-            }
-            if (smCanvas) {
-                charts.sopSampleTypes = new Chart(smCanvas.getContext("2d"), {
-                    type: "bar",
-                    data: {
-                        labels: Object.keys(sampleCounts),
-                        datasets: [{ label: "Records", data: Object.values(sampleCounts), backgroundColor: "#0891b2" }]
-                    },
-                    options: { responsive: true, maintainAspectRatio: false }
-                });
-            }
+            charts.sopStatus = new Chart(document.getElementById("chart-sop-status").getContext("2d"), {
+                type: "doughnut",
+                data: {
+                    labels: Object.keys(stCounts),
+                    datasets: [{ data: Object.values(stCounts), backgroundColor: ["#10b981", "#f59e0b", "#ef4444"] }]
+                },
+                options: { responsive: true, maintainAspectRatio: false }
+            });
+
+            charts.sopSamples = new Chart(document.getElementById("chart-sop-sample-types").getContext("2d"), {
+                type: "bar",
+                data: {
+                    labels: Object.keys(smpCounts),
+                    datasets: [{ label: "Records", data: Object.values(smpCounts), backgroundColor: "#06b6d4" }]
+                },
+                options: { responsive: true, maintainAspectRatio: false }
+            });
         }
 
-        // ==================== OPTION H: LOOKUPS & RECORD MODAL SAVE ====================
+        // ==================== OPTION H: ADMINISTRATION ====================
         const LOOKUP_CATEGORIES = [
-            { key: "diseases", label: "Diseases & Target Cases", hint: "Manage disease cohorts, acronyms, and target recruitment case counts." },
-            { key: "sourcingTypes", label: "Sourcing Types", hint: "Source channels used in Patient Sourcing sheets." },
-            { key: "specialties", label: "Medical Specialties", hint: "Clinical specialties for physicians, centers, and sourcing sheets." },
-            { key: "visitStatuses", label: "Sourcing Visit Statuses", hint: "Visit statuses used in Patient Sourcing sheets." },
-            { key: "sampleTypes", label: "Sample Types (by Disease)", hint: "Specimen types mapped to each disease cohort." },
-            { key: "coreTests", label: "Core Tests (by Disease)", hint: "Required laboratory/diagnostic core tests mapped per disease for Patient Recruitment." },
-            { key: "sampleRequirements", label: "Sample Requirements (by Disease)", hint: "Collection tube types, volumes, and processing instructions per disease." },
-            { key: "inclusionCriteria", label: "Inclusion Criteria (by Disease)", hint: "Inclusion criteria rows per disease; add/edit multiple rows per disease." },
-            { key: "exclusionCriteria", label: "Exclusion Criteria (by Disease)", hint: "Exclusion criteria rows per disease; add/edit multiple rows per disease." },
-            { key: "appointmentStatuses", label: "Appointment Statuses", hint: "Statuses used in Patient Scheduling tabs." },
-            { key: "visitModels", label: "Visit Models", hint: "Home Visit, Clinic Visit, or Hospital Visit options in Patient Scheduling." }
+            { key: "diseases", label: "1. Diseases & Target Cohorts", hint: "Master diseases list used across Patient Sourcing, Recruitment, Scheduling, and SOP." },
+            { key: "sourcingTypes", label: "2. Sourcing Types", hint: "Sourcing channels (Doctor, Medical Center, Group / Community, Social Media, Others)." },
+            { key: "specialties", label: "3. Medical Specialties", hint: "Clinical specialties referenced in Patient Sourcing." },
+            { key: "visitStatuses", label: "4. Sourcing Visit Statuses", hint: "Visit status values (Completed, Scheduled, Pending)." },
+            { key: "sampleTypes", label: "5. Sample Types per Disease", hint: "Specimen types (Blood, Blood & Urine, etc.) mapped by disease." },
+            { key: "coreTests", label: "6. Core Tests per Disease", hint: "Required laboratory & pathology tests per disease." },
+            { key: "sampleRequirements", label: "7. Sample Requirements per Disease", hint: "Tube types, volumes, and processing requirements per disease." },
+            { key: "inclusionCriteria", label: "8. Inclusion Criteria per Disease (Table)", hint: "Manage multiple inclusion criteria rows per disease in a structured table." },
+            { key: "exclusionCriteria", label: "9. Exclusion Criteria per Disease (Table)", hint: "Manage multiple exclusion criteria rows per disease in a structured table." },
+            { key: "appointmentStatuses", label: "10. Appointment Statuses", hint: "Scheduling statuses (Scheduled, Confirmed, Completed, Cancelled)." },
+            { key: "visitModels", label: "11. Visit Models", hint: "Visit delivery models (Home Visit, Clinic Visit, Hospital Visit)." }
         ];
+
+        function initLookupSelector() {
+            const sel = document.getElementById("admin-lookup-selector");
+            if (!sel) return;
+            sel.innerHTML = LOOKUP_CATEGORIES.map(c =>
+                `<option value="${c.key}" ${c.key === appState.activeLookupCategory ? "selected" : ""}>${c.label}</option>`
+            ).join("");
+            updateLookupHintAndFilterBox();
+        }
+
+        function onSelectLookupCategory(catKey) {
+            appState.activeLookupCategory = catKey;
+            updateLookupHintAndFilterBox();
+            renderLookupTable();
+        }
 
         function isCriteriaLookupCategory(cat) {
             return cat === "inclusionCriteria" || cat === "exclusionCriteria";
         }
 
-        function initLookupSelector() {
-            const sel = document.getElementById("admin-lookup-selector");
-            if (!sel) return;
-            if (!appState.activeLookupCategory) appState.activeLookupCategory = "diseases";
-            sel.innerHTML = LOOKUP_CATEGORIES.map(c =>
-                `<option value="${escapeAttr(c.key)}" ${c.key === appState.activeLookupCategory ? "selected" : ""}>${escapeHtml(c.label)}</option>`
-            ).join("");
-            onSelectLookupCategory(appState.activeLookupCategory, false);
+        function updateLookupHintAndFilterBox() {
+            const cat = appState.activeLookupCategory;
+            const meta = LOOKUP_CATEGORIES.find(c => c.key === cat) || LOOKUP_CATEGORIES[0];
+            document.getElementById("admin-lookup-hint").innerText = meta.hint;
+
+            const box = document.getElementById("admin-criteria-table-box");
+            if (isCriteriaLookupCategory(cat)) {
+                box.classList.remove("hidden");
+                const filterSel = document.getElementById("admin-criteria-disease-filter");
+                const currentFilter = filterSel.value || "";
+                const diseases = (appState.lookups.diseases || []).map(d => d.name);
+                filterSel.innerHTML = `<option value="">All Diseases (${diseases.length})</option>` +
+                    diseases.map(d => `<option value="${escapeAttr(d)}" ${d === currentFilter ? "selected" : ""}>${escapeHtml(d)}</option>`).join("");
+            } else {
+                box.classList.add("hidden");
+            }
         }
 
-        function onSelectLookupCategory(catKey, shouldRender = true) {
-            appState.activeLookupCategory = catKey;
-            const meta = LOOKUP_CATEGORIES.find(c => c.key === catKey);
-            setTextIfExists("admin-lookup-hint", meta ? meta.hint : "");
+        function renderLookupTable() {
+            const cat = appState.activeLookupCategory;
+            const list = appState.lookups[cat] || [];
+            const thead = document.getElementById("admin-lookup-thead");
+            const tbody = document.getElementById("admin-lookup-tbody");
 
-            const criteriaBox = document.getElementById("admin-criteria-table-box");
+            if (cat === "diseases") {
+                thead.innerHTML = `<tr><th class="px-3 py-2 text-left">Disease Name</th><th class="px-3 py-2 text-left">Acronym</th><th class="px-3 py-2 text-left">Target Cases</th><th class="px-3 py-2 text-right">Actions</th></tr>`;
+                tbody.innerHTML = list.map((item, idx) => `
+                    <tr ondblclick="handleRowDoubleClick(event, () => openLookupItemModal(${idx}))" class="hover:bg-slate-50 cursor-pointer" title="Double-click to edit">
+                        <td class="px-3 py-2 font-semibold text-slate-900">${escapeHtml(item.name || "")}</td>
+                        <td class="px-3 py-2">${escapeHtml(item.acronym || "")}</td>
+                        <td class="px-3 py-2">${escapeHtml(item.targetCases ?? "")}</td>
+                        <td class="px-3 py-2 text-right space-x-1">
+                            <button onclick="openLookupItemModal(${idx})" class="btn-write px-2 py-1 rounded bg-amber-100 text-amber-800 font-bold"><i class="fa-solid fa-pen"></i></button>
+                            <button onclick="deleteLookupItem(${idx})" class="btn-write px-2 py-1 rounded bg-rose-100 text-rose-800 font-bold"><i class="fa-solid fa-trash"></i></button>
+                        </td>
+                    </tr>
+                `).join("") || `<tr><td colspan="4" class="px-4 py-6 text-center text-slate-400">No entries.</td></tr>`;
+            } else if (["sampleTypes", "coreTests", "sampleRequirements", "inclusionCriteria", "exclusionCriteria"].includes(cat)) {
+                const diseaseFilterEl = document.getElementById("admin-criteria-disease-filter");
+                const diseaseFilter = isCriteriaLookupCategory(cat) && diseaseFilterEl ? diseaseFilterEl.value : "";
+
+                thead.innerHTML = `<tr><th class="px-3 py-2 text-left w-12">#</th><th class="px-3 py-2 text-left">Disease</th><th class="px-3 py-2 text-left">Criterion / Value</th><th class="px-3 py-2 text-right">Actions</th></tr>`;
+                const rows = list
+                    .map((item, idx) => ({ item, idx }))
+                    .filter(({ item }) => !diseaseFilter || item.disease === diseaseFilter);
+
+                tbody.innerHTML = rows.map(({ item, idx }, displayIdx) => `
+                    <tr ondblclick="handleRowDoubleClick(event, () => openLookupItemModal(${idx}))" class="hover:bg-slate-50 cursor-pointer" title="Double-click to edit">
+                        <td class="px-3 py-2 font-mono text-slate-400">${displayIdx + 1}</td>
+                        <td class="px-3 py-2 font-semibold text-slate-900">${escapeHtml(item.disease || "")}</td>
+                        <td class="px-3 py-2 whitespace-pre-line">${escapeHtml(item.value || "")}</td>
+                        <td class="px-3 py-2 text-right space-x-1">
+                            <button onclick="openLookupItemModal(${idx})" class="btn-write px-2 py-1 rounded bg-amber-100 text-amber-800 font-bold"><i class="fa-solid fa-pen"></i></button>
+                            <button onclick="deleteLookupItem(${idx})" class="btn-write px-2 py-1 rounded bg-rose-100 text-rose-800 font-bold"><i class="fa-solid fa-trash"></i></button>
+                        </td>
+                    </tr>
+                `).join("") || `<tr><td colspan="4" class="px-4 py-6 text-center text-slate-400">No entries for this filter.</td></tr>`;
+            } else {
+                thead.innerHTML = `<tr><th class="px-3 py-2 text-left">Lookup Value</th><th class="px-3 py-2 text-right">Actions</th></tr>`;
+                tbody.innerHTML = list.map((item, idx) => `
+                    <tr ondblclick="handleRowDoubleClick(event, () => openLookupItemModal(${idx}))" class="hover:bg-slate-50 cursor-pointer" title="Double-click to edit">
+                        <td class="px-3 py-2 font-semibold text-slate-900">${escapeHtml(item.value || "")}</td>
+                        <td class="px-3 py-2 text-right space-x-1">
+                            <button onclick="openLookupItemModal(${idx})" class="btn-write px-2 py-1 rounded bg-amber-100 text-amber-800 font-bold"><i class="fa-solid fa-pen"></i></button>
+                            <button onclick="deleteLookupItem(${idx})" class="btn-write px-2 py-1 rounded bg-rose-100 text-rose-800 font-bold"><i class="fa-solid fa-trash"></i></button>
+                        </td>
+                    </tr>
+                `).join("") || `<tr><td colspan="2" class="px-4 py-6 text-center text-slate-400">No entries.</td></tr>`;
+            }
+            applyRolePermissions();
+        }
+
+        function openLookupItemModal(idx = null) {
+            if (!canWrite()) return;
+            const cat = appState.activeLookupCategory;
+            const list = appState.lookups[cat] || [];
+            const existing = idx !== null ? list[idx] : {};
+            const meta = LOOKUP_CATEGORIES.find(c => c.key === cat);
+            modalContext = { type: "lookupItem", category: cat, idx };
+            document.getElementById("record-modal-title").innerText = (idx !== null ? "Edit" : "Add") + " — " + (meta ? meta.label : cat);
+
+            const diseaseOptions = (appState.lookups.diseases || []).map(d => d.name);
+
+            if (cat === "diseases") {
+                document.getElementById("record-modal-fields").innerHTML = `
+                    <div class="sm:col-span-2"><label class="block font-bold text-slate-700 mb-1">Disease Name</label><input type="text" name="name" value="${escapeAttr(existing.name || "")}" class="table-input" required></div>
+                    <div><label class="block font-bold text-slate-700 mb-1">Acronym</label><input type="text" name="acronym" value="${escapeAttr(existing.acronym || "")}" class="table-input"></div>
+                    <div><label class="block font-bold text-slate-700 mb-1">Target Cases</label><input type="number" name="targetCases" value="${escapeAttr(existing.targetCases ?? 10)}" class="table-input"></div>
+                `;
+            } else if (["sampleTypes", "coreTests", "sampleRequirements", "inclusionCriteria", "exclusionCriteria"].includes(cat)) {
+                const filterSel = document.getElementById("admin-criteria-disease-filter");
+                const defaultDisease = existing.disease || (filterSel && filterSel.value) || (diseaseOptions[0] || "");
+                document.getElementById("record-modal-fields").innerHTML = `
+                    <div class="sm:col-span-2"><label class="block font-bold text-slate-700 mb-1">Disease</label><select name="disease" class="table-input" required>${buildSelectOptions(diseaseOptions, defaultDisease, "-- Select Disease --")}</select></div>
+                    <div class="sm:col-span-2"><label class="block font-bold text-slate-700 mb-1">Criterion / Lookup Value</label><textarea name="value" rows="3" class="table-input" required>${escapeHtml(existing.value || "")}</textarea></div>
+                `;
+            } else {
+                document.getElementById("record-modal-fields").innerHTML = `
+                    <div class="sm:col-span-2"><label class="block font-bold text-slate-700 mb-1">Value</label><input type="text" name="value" value="${escapeAttr(existing.value || "")}" class="table-input" required></div>
+                `;
+            }
+            document.getElementById("record-modal").classList.remove("hidden");
+        }
+
+        function openCriteriaBatchModal() {
+            if (!canWrite()) return;
+            const cat = appState.activeLookupCategory;
+            if (!isCriteriaLookupCategory(cat)) return;
+
             const filterSel = document.getElementById("admin-criteria-disease-filter");
-            const showCriteriaBox = isCriteriaLookupCategory(catKey);
-            if (criteriaBox) {
-                criteriaBox.classList.toggle("hidden", !showCriteriaBox);
-            }
-            if (showCriteriaBox && filterSel) {
-                const prevFilter = filterSel.value;
-                const diseaseNames = (appState.lookups.diseases || []).map(d => d.name);
-                filterSel.innerHTML = `<option value="">All Diseases</option>` + diseaseNames.map(d =>
-                    `<option value="${escapeAttr(d)}" ${d === prevFilter ? "selected" : ""}>${escapeHtml(d)}</option>`
-                ).join("");
-            }
-            if (shouldRender) renderLookupTable();
+            const diseaseOptions = (appState.lookups.diseases || []).map(d => d.name);
+            const selectedDisease = (filterSel && filterSel.value) || diseaseOptions[0] || "";
+
+            const existingRows = (appState.lookups[cat] || [])
+                .filter(entry => entry.disease === selectedDisease)
+                .map(entry => entry.value || "")
+                .join("\n");
+
+            const label = cat === "inclusionCriteria" ? "Inclusion Criteria" : "Exclusion Criteria";
+            modalContext = { type: "criteriaBatch", category: cat };
+            document.getElementById("record-modal-title").innerText = `Batch Manage ${label} by Disease`;
+            document.getElementById("record-modal-fields").innerHTML = `
+                <div class="sm:col-span-2">
+                    <label class="block font-bold text-slate-700 mb-1">Target Disease</label>
+                    <select name="batchDisease" onchange="onBatchDiseaseChange(this.value)" class="table-input" required>
+                        ${buildSelectOptions(diseaseOptions, selectedDisease, "-- Select Disease --")}
+                    </select>
+                </div>
+                <div class="sm:col-span-2">
+                    <label class="block font-bold text-slate-700 mb-1">Criteria Rows (one criterion per line — each line becomes a table row)</label>
+                    <textarea id="batch-criteria-textarea" name="batchCriteriaRows" rows="7" class="table-input" placeholder="Enter one criterion per line...">${escapeHtml(existingRows)}</textarea>
+                </div>
+            `;
+            document.getElementById("record-modal").classList.remove("hidden");
         }
 
-        function closeRecordModal() {
-            modalContext = null;
-            const modal = document.getElementById("record-modal");
-            if (modal) modal.classList.add("hidden");
+        function onBatchDiseaseChange(diseaseName) {
+            if (!modalContext || modalContext.type !== "criteriaBatch") return;
+            const cat = modalContext.category;
+            const textarea = document.getElementById("batch-criteria-textarea");
+            if (!textarea) return;
+            textarea.value = (appState.lookups[cat] || [])
+                .filter(entry => entry.disease === diseaseName)
+                .map(entry => entry.value || "")
+                .join("\n");
         }
 
-        function handleRecordModalSave(event) {
+        function buildLookupItemFromForm(cat, fd, prev) {
+            const baseId = prev && prev.id ? prev.id : (cat.slice(0, 3) + "-" + Date.now());
+            if (cat === "diseases") {
+                return {
+                    id: baseId,
+                    name: fd.get("name"),
+                    acronym: fd.get("acronym") || "",
+                    targetCases: Number(fd.get("targetCases")) || 0
+                };
+            }
+            if (["sampleTypes", "coreTests", "sampleRequirements", "inclusionCriteria", "exclusionCriteria"].includes(cat)) {
+                return {
+                    id: baseId,
+                    disease: fd.get("disease"),
+                    value: fd.get("value")
+                };
+            }
+            return {
+                id: baseId,
+                value: fd.get("value")
+            };
+        }
+
+        function deleteLookupItem(idx) {
+            if (!canWrite()) return;
+            const cat = appState.activeLookupCategory;
+            if (!appState.lookups[cat]) return;
+            appState.lookups[cat].splice(idx, 1);
+            saveToLocalStorage();
+            renderLookupTable();
+            showToast("Lookup entry deleted.", "amber");
+        }
+
+        function renderAdminUsers() {
+            const tbody = document.getElementById("admin-users-tbody");
+            const isAdmin = appState.currentUser && appState.currentUser.role === "Admin";
+            tbody.innerHTML = appState.users.map((u, idx) => `
+                <tr>
+                    <td class="px-3 py-2 font-semibold">${escapeHtml(u.username)}</td>
+                    <td class="px-3 py-2"><span class="px-2 py-0.5 rounded-full text-[11px] font-bold bg-slate-100 text-slate-800">${escapeHtml(u.role)}</span></td>
+                    <td class="px-3 py-2 text-right">
+                        ${isAdmin && appState.users.length > 1
+                            ? `<button onclick="deleteUser(${idx})" class="px-2 py-1 rounded bg-rose-100 text-rose-800 font-bold">Remove</button>`
+                            : `<span class="text-slate-400">Protected</span>`}
+                    </td>
+                </tr>
+            `).join("");
+        }
+
+        function handleCreateUser(event) {
             event.preventDefault();
-            if (!canWrite() || !modalContext) return;
+            if (!appState.currentUser || appState.currentUser.role !== "Admin") {
+                showToast("Only Admin users can create accounts.", "amber");
+                return;
+            }
+            const username = document.getElementById("new-user-name").value.trim();
+            const password = document.getElementById("new-user-pass").value;
+            const role = document.getElementById("new-user-role").value;
+            if (!username || !password) return;
+            if (appState.users.some(u => u.username === username)) {
+                showToast("Username already exists.", "amber");
+                return;
+            }
+            appState.users.push({ username, password, role });
+            saveToLocalStorage();
+            if (db) {
+                db.ref("users").child(username).set({ username, password, role }).catch(() => {});
+            }
+            document.getElementById("admin-user-form").reset();
+            renderAdminUsers();
+            showToast("User " + username + " added.", "emerald");
+        }
 
-            const form = event.target;
-            const fd = new FormData(form);
+        function deleteUser(idx) {
+            if (!appState.currentUser || appState.currentUser.role !== "Admin") return;
+            const removed = appState.users[idx];
+            appState.users.splice(idx, 1);
+            saveToLocalStorage();
+            if (db && removed) {
+                db.ref("users").child(removed.username).remove().catch(() => {});
+            }
+            renderAdminUsers();
+            showToast("User removed.", "amber");
+        }
 
-            if (modalContext.type === "sourcing") {
-                const sheet = appState.sourcing[appState.sourcingSheet];
-                const rowObj = {};
-                sheet.headers.forEach(h => {
-                    const v = fd.get(h);
-                    rowObj[h] = v === "" ? null : v;
-                });
-                if (modalContext.rowIdx !== null && modalContext.rowIdx !== undefined) {
-                    sheet.rows[modalContext.rowIdx] = rowObj;
-                } else {
-                    sheet.rows.push(rowObj);
-                }
-                saveToLocalStorage();
+        function loadAdminConfigInputs() {
+            document.getElementById("cfg-site-number").value = appState.config.siteNumber || "962001";
+            document.getElementById("cfg-sponsor-name").value = appState.config.sponsorName || "Axiom Bioregistry";
+            document.getElementById("cfg-drive-url").value = appState.config.driveUrl || "https://drive.google.com/drive/folders/1PwlZRf9EnH2h4JNL0idrVc9ksIh4TLjd";
+        }
+
+        function saveAdminConfig() {
+            if (!canWrite()) return;
+            appState.config.siteNumber = document.getElementById("cfg-site-number").value.trim() || "962001";
+            appState.config.sponsorName = document.getElementById("cfg-sponsor-name").value.trim() || "Axiom Bioregistry";
+            appState.config.driveUrl = document.getElementById("cfg-drive-url").value.trim() || "https://drive.google.com/drive/folders/1PwlZRf9EnH2h4JNL0idrVc9ksIh4TLjd";
+            saveToLocalStorage();
+            showToast("Configuration saved.", "emerald");
+        }
+
+        function reseedFromExcelData(showMsg = false) {
+            appState.lookups = JSON.parse(JSON.stringify(INITIAL_SEED.lookups));
+            appState.sourcing = JSON.parse(JSON.stringify(INITIAL_SEED.sourcing));
+            appState.recruitment = JSON.parse(JSON.stringify(INITIAL_SEED.recruitment));
+            appState.scheduling = JSON.parse(JSON.stringify(INITIAL_SEED.scheduling));
+            saveToLocalStorage();
+            updateHomeSummaryCounts();
+            if (appState.activeModule === "sourcing") {
                 renderSourcingTabs();
                 renderSourcingTable();
                 renderSourcingStatsAndCharts();
-                updateHomeSummaryCounts();
-                closeRecordModal();
-                showToast("Sourcing record saved.", "emerald");
-                return;
-            }
-
-            if (modalContext.type === "recruitment") {
-                const sheet = appState.recruitment.sheets[appState.recruitmentSheet];
-                const prevCase = (modalContext.idx !== null && modalContext.idx !== undefined)
-                    ? sheet.cases[modalContext.idx]
-                    : {};
-                const selectedDisease = fd.get("disease") || resolveDiseaseFromSheetName(appState.recruitmentSheet);
-
-                const testNames = Array.from(form.querySelectorAll('input[name="coreTestName"]')).map(el => el.value);
-                const testResults = Array.from(form.querySelectorAll('input[name="coreTestResult"]')).map(el => el.value);
-                const coreTestRows = testNames.map((name, i) => ({
-                    test: name,
-                    result: testResults[i] || ""
-                }));
-
-                const selectedInclusions = Array.from(form.querySelectorAll('input[name="modalIncItem"]:checked')).map(el => el.value);
-                const selectedExclusions = Array.from(form.querySelectorAll('input[name="modalExcItem"]:checked')).map(el => el.value);
-                const incCustom = (fd.get("incText") || "").trim();
-                const excCustom = (fd.get("excText") || "").trim();
-
-                const caseObj = Object.assign({}, prevCase, {
-                    caseNum: fd.get("caseNum") ? Number(fd.get("caseNum")) : (prevCase.caseNum || sheet.cases.length + 1),
-                    patientCode: fd.get("patientCode") || "",
-                    patientName: fd.get("patientName") || "",
-                    disease: selectedDisease,
-                    gender: fd.get("gender") || "",
-                    age: fd.get("age") !== "" ? Number(fd.get("age")) : null,
-                    mobile: fd.get("mobile") || "",
-                    nationalId: fd.get("nationalId") || "",
-                    sampleType: fd.get("sampleType") || "",
-                    sampleReq: fd.get("sampleReq") || "",
-                    coreTests: formatCoreTestRowsAsText(coreTestRows),
-                    selectedInclusions,
-                    incChecked: selectedInclusions.length > 0 || Boolean(incCustom),
-                    incText: incCustom || selectedInclusions.join("; "),
-                    selectedExclusions,
-                    excChecked: selectedExclusions.length > 0 || Boolean(excCustom),
-                    excText: excCustom || selectedExclusions.join("; "),
-                    appointment: fd.get("appointment") || "",
-                    bsAccepted: Boolean(form.querySelector('input[name="bsAccepted"]')?.checked),
-                    axiomAccepted: Boolean(form.querySelector('input[name="axiomAccepted"]')?.checked),
-                    surveyDone: Boolean(form.querySelector('input[name="surveyDone"]')?.checked),
-                    icfDone: Boolean(form.querySelector('input[name="icfDone"]')?.checked),
-                    sampleCollected: Boolean(form.querySelector('input[name="sampleCollected"]')?.checked),
-                    processingDone: Boolean(form.querySelector('input[name="processingDone"]')?.checked),
-                    notes: fd.get("notes") || ""
-                });
-
-                if (modalContext.idx !== null && modalContext.idx !== undefined) {
-                    sheet.cases[modalContext.idx] = caseObj;
-                } else {
-                    sheet.cases.push(caseObj);
-                }
-
-                saveToLocalStorage();
+            } else if (appState.activeModule === "recruitment") {
                 renderRecruitmentTabs();
                 renderRecruitmentTable();
                 renderRecruitmentStatsAndCharts();
-                updateHomeSummaryCounts();
-                closeRecordModal();
-                showToast("Recruitment case saved.", "emerald");
-                return;
-            }
-
-            if (modalContext.type === "repository") {
-                const entry = {
-                    id: (modalContext.idx !== null && appState.repository[modalContext.idx]?.id) || ("repo-" + Date.now()),
-                    patientCode: fd.get("patientCode") || "",
-                    patientName: fd.get("patientName") || "",
-                    disease: fd.get("disease") || "",
-                    docLabel: fd.get("docLabel") || "",
-                    driveUrl: fd.get("driveUrl") || appState.config.driveUrl,
-                    updatedAt: new Date().toISOString().slice(0, 10)
-                };
-                if (modalContext.idx !== null && modalContext.idx !== undefined) {
-                    appState.repository[modalContext.idx] = entry;
-                } else {
-                    appState.repository.unshift(entry);
-                }
-                saveToLocalStorage();
-                renderRepositoryTable();
-                closeRecordModal();
-                showToast("Repository record saved.", "emerald");
-                return;
-            }
-
-            if (modalContext.type === "newSchedulingMonth") {
-                const monthLabel = (fd.get("monthLabel") || "").trim();
-                if (!monthLabel) return;
-                if (!appState.scheduling[monthLabel]) {
-                    appState.scheduling[monthLabel] = {
-                        headers: ["Batch ID", "Patient Name", "Patient Code", "Patient Mobile Number", "Disease", "Appointment Status", "Visit Model", "Visit Date", "Visit Time", "Visit Location (incase of home)", "Comments"],
-                        rows: []
-                    };
-                }
-                appState.schedulingMonth = monthLabel;
-                saveToLocalStorage();
+            } else if (appState.activeModule === "scheduling") {
                 renderSchedulingTabs();
                 renderSchedulingTable();
                 renderSchedulingStatsAndCharts();
-                closeRecordModal();
-                showToast("Created tab " + monthLabel, "emerald");
-                return;
-            }
-
-            if (modalContext.type === "scheduling") {
-                const sheet = appState.scheduling[appState.schedulingMonth];
-                const rowObj = {};
-                sheet.headers.forEach(h => {
-                    const v = fd.get(h);
-                    rowObj[h] = v === "" ? null : v;
-                });
-                if (modalContext.idx !== null && modalContext.idx !== undefined) {
-                    sheet.rows[modalContext.idx] = rowObj;
-                } else {
-                    sheet.rows.push(rowObj);
-                }
-                saveToLocalStorage();
-                renderSchedulingTabs();
-                renderSchedulingTable();
-                renderSchedulingStatsAndCharts();
-                updateHomeSummaryCounts();
-                closeRecordModal();
-                showToast("Appointment saved.", "emerald");
-                return;
-            }
-
-            if (modalContext.type === "lookupItem") {
-                const cat = modalContext.category;
-                if (!Array.isArray(appState.lookups[cat])) appState.lookups[cat] = [];
-                const prev = (modalContext.idx !== null && modalContext.idx !== undefined) ? appState.lookups[cat][modalContext.idx] : null;
-                const item = buildLookupItemFromForm(cat, fd, prev);
-                if (modalContext.idx !== null && modalContext.idx !== undefined) {
-                    appState.lookups[cat][modalContext.idx] = item;
-                } else {
-                    appState.lookups[cat].push(item);
-                }
-
-                // Auto-create matching sheet for new diseases
-                if (cat === "diseases" && item.name) {
-                    ensureRecruitmentSheetExists(item.name);
-                }
-
-                saveToLocalStorage();
+            } else if (appState.activeModule === "admin") {
+                initLookupSelector();
                 renderLookupTable();
-                if (appState.activeModule === "recruitment") {
-                    renderRecruitmentTabs();
-                    renderRecruitmentTable();
-                    renderRecruitmentStatsAndCharts();
-                }
-                closeRecordModal();
-                showToast("Lookup entry saved.", "emerald");
-                return;
             }
-
-            if (modalContext.type === "criteriaBatch") {
-                const cat = modalContext.category;
-                const disease = fd.get("batchDisease");
-                const lines = String(fd.get("batchCriteriaRows") || "")
-                    .split(/\r?\n/)
-                    .map(s => s.trim())
-                    .filter(Boolean);
-
-                const remaining = (appState.lookups[cat] || []).filter(entry => entry.disease !== disease);
-                const prefix = cat === "inclusionCriteria" ? "ic" : "ec";
-                const added = lines.map((val, i) => ({
-                    id: `${prefix}-${Date.now()}-${i}`,
-                    disease,
-                    value: val
-                }));
-                appState.lookups[cat] = remaining.concat(added);
-                saveToLocalStorage();
-                renderLookupTable();
-                closeRecordModal();
-                showToast("Criteria rows updated for " + disease, "emerald");
-            }
+            if (showMsg) showToast("Excel seed data restored.", "emerald");
         }
 
         // ==================== UTILITIES ====================
